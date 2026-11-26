@@ -1,0 +1,9 @@
+{
+  "version": "flicker",
+  "code": "DIAG",
+  "mod": "overlays",
+  "modRva": "",
+  "addr": "",
+  "win": "",
+  "log": "overlay hooks: game:module-snapshot-failed,self:nvspcap64.dll"
+}

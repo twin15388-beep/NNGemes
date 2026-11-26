@@ -1,0 +1,9 @@
+{
+  "version": "flicker",
+  "code": "DIAG",
+  "mod": "flicker",
+  "modRva": "",
+  "addr": "",
+  "win": "",
+  "log": "enum: 0 Drawn 1 Disabled 2 MissingFrame 3 InvalidCamera 4 CameraChanged 5 StaleFrame 6 NoEligible 7 NoPose 8 StalePose 9 Reanchor 10 Bounds\n[141.23] drop 4726 ms, 261 frames, hidden=0 players=27 eligible=26 poses=26 fresh=26 frameAge=6 boneAge=17 fg=13248 attached=13248 first=Bounds cat: noFocus=0 iconic=0 hwndLost=0 otherWin=0 ghost=0 frameDt(min/mean/max): 0.5/18.1/194.1 ms sampler: rigs=26 att=16 acc=16 held=0 rej=0 rebind=0 exp=0 anchRej=0 boundsRej=26 cull=16 netCull=16 natFail=0 natRec=0 noBonesOnScreenFrames=0 fgStart: pid=13248 tid=9692 cls=\"UnityWndClass\" ttl=\"ROB RUN\" fgEnd: pid=13248 tid=9692 cls=\"UnityWndClass\" ttl=\"ROB RUN\" reasons: Bounds=261\n"
+}
