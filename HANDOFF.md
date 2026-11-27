@@ -159,3 +159,8 @@
 ## Probe #4 (2026-11-27)
 - `game process 'ROB RUN.exe' not found` — probe запущен без запущенной игры. Драйвер на этом этапе, судя по порядку, уже загружен.
 - Требуется: игра через Steam -> матч -> NZL-Probe.ps1 от админа -> nzl_probe.txt с проверкой секции и чтения GameAssembly.
+
+## BSOD у владельца (2026-11-27) — СТОП по драйверу
+- Скриншот: BSOD поверх игры, "Код остановки" похож на KMODE_EXCEPTION_NOT_HANDLED. ПК крашнулся предположительно с DACL-версией драйвера (ручные SID) либо при её загрузке/работе.
+- ЗАПРЕТ: driver.sys НЕ загружать до анализа minidump. После перезагрузки kdmapper-драйвер отсутствует (ручной мап), игра должна работать штатно.
+- `tools/NZL-CrashInfo.ps1`: собирает BugCheck 1001/Kernel-Power 41 + копирует последний C:\Windows\Minidump\*.dmp в crash_info/. Жду crash_info.txt + .dmp.
