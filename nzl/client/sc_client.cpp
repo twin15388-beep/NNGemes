@@ -1,4 +1,6 @@
 #include "sc_client.h"
+#include <cstdio>
+#include <cwchar>
 #include <cstring>
 
 static HANDLE  g_map = nullptr;

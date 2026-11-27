@@ -14,17 +14,26 @@ if not exist "%WINSDK%\Include\%SDK%\km\ntddk.h" (
     )
 )
 
-rem Find a supported Visual Studio installation, then select a toolset.
+rem Find Visual Studio via vswhere (any drive/edition), fallback to known paths.
 set "VS="
-for %%P in (
-    "C:\Program Files\Microsoft Visual Studio\18\Community"
-    "C:\Program Files\Microsoft Visual Studio\18\Professional"
-    "C:\Program Files\Microsoft Visual Studio\2022\Community"
-    "C:\Program Files\Microsoft Visual Studio\2022\Professional"
-    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
-    "C:\Program Files\Microsoft Visual Studio\2022\BuildTools"
-) do (
-    if not defined VS if exist "%%~P\VC\Tools\MSVC" set "VS=%%~P"
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS=%%I"
+)
+if not defined VS (
+    for %%P in (
+        "C:\Program Files\Microsoft Visual Studio\18\Community"
+        "C:\Program Files\Microsoft Visual Studio\18\Professional"
+        "C:\Program Files\Microsoft Visual Studio\2022\Community"
+        "C:\Program Files\Microsoft Visual Studio\2022\Professional"
+        "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+        "C:\Program Files\Microsoft Visual Studio\2022\BuildTools"
+        "D:\programs\vs"
+        "D:\Program Files\Microsoft Visual Studio\2022\Community"
+        "E:\Program Files\Microsoft Visual Studio\2022\Community"
+    ) do (
+        if not defined VS if exist "%%~P\VC\Tools\MSVC" set "VS=%%~P"
+    )
 )
 if not defined VS (
     echo [ERROR] Visual Studio with the C++ toolset not found.
