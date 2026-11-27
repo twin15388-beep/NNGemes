@@ -72,59 +72,82 @@ struct Ctx {
   std::vector<nzl::DrawCmd> draws;
   float fov = 90.0f;
   int width = 1920, height = 1080;
+  // In-game menu (INSERT toggles): settings applied every tick.
+  bool menu = false;
+  int menu_sel = 0;
+  bool show_dead = false;
+  bool show_boxes = true;
+  bool show_text = true;
+  float max_dist = 500.0f;
 };
-// Fast player snapshot: 3 batch commands per tick (values, char fields,
-// positions) instead of ~6 small reads per player.
+// Player snapshot v2: iterate the WHOLE entries array of the dictionary
+// (array length @entries+0x18), not just _count - Dictionary keeps free
+// slots (hash<0) inside, and _count alone dropped live players
+// ("not everyone captured"). All reads are batched, chunked to the
+// driver's 64-item batch limit.
 static std::vector<nzl::PlayerSnap> snapshot_fast(Ctx& c, const nzl::Vec3f& local) {
   std::vector<nzl::PlayerSnap> out;
   auto h = nzl::read_dict(*c.mem, c.chain.dict, c.off);
-  if (!h || h->count <= 0) return out;
-  int n = h->count < 64 ? h->count : 64;
-  std::vector<NaItem> items(n);
-  std::vector<uint8_t> buf(n * 8, 0);
-  for (int i = 0; i < n; i++) {
-    items[i].address = h->entries + 0x20ULL + (uint64_t)i * c.off.dict_stride + 0x10;
-    items[i].offset = (uint32_t)(i * 8); items[i].size = 8;
-  }
-  if (!NaBatchRead(c.pid, items.data(), n, buf.data(), n * 8)) return out;
-  std::vector<uint64_t> chars(n, 0);
-  for (int i = 0; i < n; i++) std::memcpy(&chars[i], buf.data() + i * 8, 8);
-
-  // Simpler correct path: one batch for transforms, one for ids/dead is
-  // over-engineering; do transforms in one batch, ids via direct reads
-  // (few, once per tick).
-  std::vector<uint8_t> tb(n * 8, 0);
-  std::vector<NaItem> ti;
-  for (int i = 0; i < n; i++) if (chars[i]) ti.push_back(NaItem{chars[i] + c.off.char_transform, (uint32_t)(i * 8), 8});
-  if (ti.empty() || !NaBatchRead(c.pid, ti.data(), (uint32_t)ti.size(), tb.data(), n * 8)) return out;
-  std::vector<uint8_t> pb(n * 12, 0);
-  std::vector<NaItem> pi;
-  for (int i = 0; i < n; i++) {
-    uint64_t tr = 0; std::memcpy(&tr, tb.data() + i * 8, 8);
-    if (tr) pi.push_back(NaItem{tr + c.off.ctm_x, (uint32_t)(i * 12), 12});
-  }
-  if (pi.empty() || !NaBatchRead(c.pid, pi.data(), (uint32_t)pi.size(), pb.data(), n * 12)) return out;
-  // id + dead in ONE batch: 2 items per char, packed stride 8
-  // (id i32 @+0, dead u8 @+4). Was 2 direct reads per player per tick.
-  std::vector<uint8_t> ib(n * 8, 0);
-  {
-    std::vector<NaItem> ii;
+  if (!h) return out;
+  uint64_t arrlen64 = 0;
+  if (!c.mem->read(h->entries + 0x18, &arrlen64, 8)) return out;
+  int total = (int)(arrlen64 > 1024 ? 1024 : arrlen64);
+  if (total <= 0) return out;
+  std::vector<uint64_t> chars;
+  // entries chunk of 24: hash(i32)+value(u64) packed stride 16
+  for (int base = 0; base < total; base += 24) {
+    int n = (total - base) < 24 ? (total - base) : 24;
+    std::vector<NaItem> items;
+    std::vector<uint8_t> buf(n * 16, 0);
     for (int i = 0; i < n; i++) {
-      if (!chars[i]) continue;
-      ii.push_back(NaItem{chars[i] + c.off.char_id, (uint32_t)(i * 8), 4});
-      ii.push_back(NaItem{chars[i] + c.off.char_is_dead, (uint32_t)(i * 8 + 4), 1});
+      uint64_t e = h->entries + 0x20ULL + (uint64_t)(base + i) * c.off.dict_stride;
+      items.push_back(NaItem{e, (uint32_t)(i * 16), 4});
+      items.push_back(NaItem{e + 0x10, (uint32_t)(i * 16 + 8), 8});
     }
-    if (!ii.empty()) NaBatchRead(c.pid, ii.data(), (uint32_t)ii.size(), ib.data(), n * 8);
+    if (!NaBatchRead(c.pid, items.data(), (uint32_t)items.size(), buf.data(), n * 16)) continue;
+    for (int i = 0; i < n; i++) {
+      int32_t hash = 0; uint64_t v = 0;
+      std::memcpy(&hash, buf.data() + i * 16, 4);
+      std::memcpy(&v, buf.data() + i * 16 + 8, 8);
+      if (hash >= 0 && v) chars.push_back(v);
+    }
+  }
+  int n = (int)chars.size();
+  if (!n) return out;
+  std::vector<uint64_t> transforms(n, 0);
+  std::vector<float> pos(n * 3, 0.0f);
+  std::vector<int32_t> ids(n, 0);
+  std::vector<uint8_t> dead(n, 0);
+  for (int base = 0; base < n; base += 32) {
+    int m = (n - base) < 32 ? (n - base) : 32;
+    std::vector<NaItem> ti; std::vector<uint8_t> tb(m * 8, 0);
+    for (int i = 0; i < m; i++) ti.push_back(NaItem{chars[base + i] + c.off.char_transform, (uint32_t)(i * 8), 8});
+    if (NaBatchRead(c.pid, ti.data(), (uint32_t)ti.size(), tb.data(), m * 8))
+      for (int i = 0; i < m; i++) std::memcpy(&transforms[base + i], tb.data() + i * 8, 8);
+    std::vector<NaItem> pi; std::vector<uint8_t> pb(m * 12, 0);
+    for (int i = 0; i < m; i++) if (transforms[base + i]) pi.push_back(NaItem{transforms[base + i] + c.off.ctm_x, (uint32_t)(i * 12), 12});
+    if (!pi.empty() && NaBatchRead(c.pid, pi.data(), (uint32_t)pi.size(), pb.data(), m * 12))
+      for (int i = 0; i < m; i++) std::memcpy(&pos[(base + i) * 3], pb.data() + i * 12, 12);
+  }
+  for (int base = 0; base < n; base += 32) {
+    int m = (n - base) < 32 ? (n - base) : 32;
+    std::vector<NaItem> ii; std::vector<uint8_t> ib(m * 8, 0);
+    for (int i = 0; i < m; i++) {
+      ii.push_back(NaItem{chars[base + i] + c.off.char_id, (uint32_t)(i * 8), 4});
+      ii.push_back(NaItem{chars[base + i] + c.off.char_is_dead, (uint32_t)(i * 8 + 4), 1});
+    }
+    if (NaBatchRead(c.pid, ii.data(), (uint32_t)ii.size(), ib.data(), m * 8))
+      for (int i = 0; i < m; i++) {
+        std::memcpy(&ids[base + i], ib.data() + i * 8, 4);
+        dead[base + i] = ib[i * 8 + 4];
+      }
   }
   for (int i = 0; i < n; i++) {
-    if (!chars[i]) continue;
-    float xyz[3] = {}; std::memcpy(xyz, pb.data() + i * 12, 12);
-    if (xyz[0] == 0 && xyz[1] == 0 && xyz[2] == 0) continue;
-    nzl::PlayerSnap s; s.addr = chars[i];
-    std::memcpy(&s.id, ib.data() + i * 8, 4);
-    s.dead = ib[i * 8 + 4] != 0;
-    s.pos = {xyz[0], xyz[1], xyz[2]};
-    float dx = s.pos.x - local.x, dy = s.pos.y - local.y, dz = s.pos.z - local.z;
+    float x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+    if ((x == 0 && y == 0 && z == 0) || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) continue;
+    nzl::PlayerSnap s; s.addr = chars[i]; s.id = ids[i]; s.dead = dead[i] != 0;
+    s.pos = {x, y, z};
+    float dx = x - local.x, dy = y - local.y, dz = z - local.z;
     s.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
     out.push_back(s);
   }
@@ -163,6 +186,31 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
           TextOutA(dc, (int)d.x1, (int)d.y1, d.text.c_str(), (int)d.text.size());
         }
       }
+      if (g_ctx->menu) {
+        // NZL menu panel: INSERT toggles, UP/DOWN select, LEFT/RIGHT adjust.
+        char lines[6][96];
+        std::snprintf(lines[0], 96, "NZL Studio  [INSERT close]");
+        std::snprintf(lines[1], 96, "FOV          %.0f", g_ctx->fov);
+        std::snprintf(lines[2], 96, "Max distance %.0f m", g_ctx->max_dist);
+        std::snprintf(lines[3], 96, "Show dead    %s", g_ctx->show_dead ? "ON" : "OFF");
+        std::snprintf(lines[4], 96, "Boxes        %s", g_ctx->show_boxes ? "ON" : "OFF");
+        std::snprintf(lines[5], 96, "Labels       %s", g_ctx->show_text ? "ON" : "OFF");
+        HBRUSH panel = CreateSolidBrush(RGB(24, 0, 36));
+        RECT pr{10, 10, 300, 10 + 22 * 6 + 10};
+        FillRect(dc, &pr, panel); DeleteObject(panel);
+        HPEN border = CreatePen(PS_SOLID, 1, RGB(191, 64, 255));
+        HGDIOBJ ob = SelectObject(dc, border);
+        HGDIOBJ obb = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+        Rectangle(dc, pr.left, pr.top, pr.right, pr.bottom);
+        SelectObject(dc, ob); SelectObject(dc, obb); DeleteObject(border);
+        for (int i = 0; i < 6; i++) {
+          if (i > 0 && i - 1 == g_ctx->menu_sel) SetTextColor(dc, RGB(255, 255, 255));
+          else if (i == 0) SetTextColor(dc, RGB(216, 160, 255));
+          else SetTextColor(dc, RGB(200, 140, 255));
+          TextOutA(dc, 20, 18 + i * 22, lines[i], (int)std::strlen(lines[i]));
+        }
+        SetTextColor(dc, RGB(216, 160, 255));
+      }
       SelectObject(dc, oldpen); SelectObject(dc, oldfont);
       DeleteObject(pen); DeleteObject(font);
     }
@@ -172,7 +220,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   return DefWindowProcW(h, msg, wp, lp);
 }
 int main() {
-  std::printf("[NZL Studio overlay] purple ESP. END=exit, UP/DOWN=FOV.\n");
+  std::printf("[NZL Studio overlay] purple ESP. INSERT=menu, END=exit.\n");
   DWORD pid = find_pid(L"ROB RUN.exe");
   if (!pid) { std::printf("[NZL] game not running.\n"); return 2; }
   nzl::DriverMemory mem(pid);
@@ -246,8 +294,24 @@ int main() {
       TranslateMessage(&msg); DispatchMessageW(&msg);
     }
     if (GetAsyncKeyState(VK_END) & 1) break;
-    if (GetAsyncKeyState(VK_UP) & 1 && ctx.fov < 140) ctx.fov += 1;
-    if (GetAsyncKeyState(VK_DOWN) & 1 && ctx.fov > 40) ctx.fov -= 1;
+    if (GetAsyncKeyState(VK_INSERT) & 1) { ctx.menu = !ctx.menu; InvalidateRect(ov, nullptr, FALSE); }
+    if (ctx.menu) {
+      if (GetAsyncKeyState(VK_UP) & 1) ctx.menu_sel = (ctx.menu_sel + 4) % 5;
+      if (GetAsyncKeyState(VK_DOWN) & 1) ctx.menu_sel = (ctx.menu_sel + 1) % 5;
+      bool left = (GetAsyncKeyState(VK_LEFT) & 1) != 0;
+      bool right = (GetAsyncKeyState(VK_RIGHT) & 1) != 0;
+      if (left || right) {
+        int d = right ? 1 : -1;
+        switch (ctx.menu_sel) {
+          case 0: ctx.fov = ctx.fov + d * 1.0f; if (ctx.fov < 40) ctx.fov = 40; if (ctx.fov > 140) ctx.fov = 140; break;
+          case 1: ctx.max_dist = ctx.max_dist + d * 25.0f; if (ctx.max_dist < 25) ctx.max_dist = 25; if (ctx.max_dist > 1500) ctx.max_dist = 1500; break;
+          case 2: ctx.show_dead = !ctx.show_dead; break;
+          case 3: ctx.show_boxes = !ctx.show_boxes; break;
+          case 4: ctx.show_text = !ctx.show_text; break;
+        }
+        InvalidateRect(ov, nullptr, FALSE);
+      }
+    }
     if (!IsWindow(g_game_wnd)) break;
     RECT cr{}; GetClientRect(g_game_wnd, &cr);
     POINT pt{0, 0}; ClientToScreen(g_game_wnd, &pt);
@@ -263,10 +327,29 @@ int main() {
       rd3(ctx.chain.camera_model + off.cam_right, cright);
       rd3(ctx.chain.camera_model + off.cam_up, cup);
       auto players = snapshot_fast(ctx, cpos);
+      if (!ctx.show_dead) {
+        std::vector<nzl::PlayerSnap> alive;
+        for (auto& p : players) if (!p.dead) alive.push_back(p);
+        players = alive;
+      }
+      // Normalise camera basis: BattleCameraModel vectors are direction
+      // fields, not guaranteed unit length - unnormalised basis skews
+      // projection away from screen centre ("right only at one angle").
+      auto norm = [](nzl::Vec3f v) {
+        float l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+        return l > 0.001f ? nzl::Vec3f{v.x / l, v.y / l, v.z / l} : v;
+      };
       nzl::CameraView view;
-      view.pos = cpos; view.fwd = cfwd; view.right = cright; view.up = cup;
+      view.pos = cpos; view.fwd = norm(cfwd); view.right = norm(cright); view.up = norm(cup);
       view.width = ctx.width; view.height = ctx.height; view.fov_deg = ctx.fov;
-      ctx.draws = nzl::build_draw_list(view, players, 500.0f);
+      ctx.draws = nzl::build_draw_list(view, players, ctx.max_dist);
+      std::vector<nzl::DrawCmd> kept;
+      for (auto& d : ctx.draws) {
+        if (d.kind == nzl::DrawCmd::Rect && !ctx.show_boxes) continue;
+        if (d.kind == nzl::DrawCmd::Text && !ctx.show_text) continue;
+        kept.push_back(d);
+      }
+      ctx.draws = kept;
       InvalidateRect(ov, nullptr, FALSE);
     }
     Sleep(16);

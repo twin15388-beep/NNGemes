@@ -440,3 +440,22 @@
   NZL-LoadDriver once, game, nzl_overlay. Old driver + new overlay =
   SCAN unsupported -> Game=0 fast (expected, not a crash).
 - Snapshot batches: values/transforms/positions/id+dead all batch.
+
+## Overlay v2: speed, menu, full dict, basis normalize (2026-11-27)
+- Owner: old overlay slow at "Finding GameAssembly", boxes right only
+  at one angle, not all players, wants in-game settings menu.
+- Speed: NaInit now timeBeginPeriod(1) (winmm) - driver worker poll
+  delay was quantized to ~15.6ms/command; 1ms timer should cut every
+  round trip ~10x with NO driver change/reload. Kernel SCAN already
+  covers heap search.
+- "Not all": snapshot_fast v2 iterates full Dictionary entries ARRAY
+  (len @entries+0x18, cap 1024), skips hash<0 free slots, batches in
+  chunks of 24/32 respecting the 64-item batch cap.
+- "Angle": camera basis vectors normalized before projection;
+  remaining centre-vs-edge error is FOV - now adjustable in menu.
+- Menu: INSERT toggles purple panel; UP/DOWN select, LEFT/RIGHT
+  adjust FOV (40-140), Max distance (25-1500), Show dead, Boxes,
+  Labels. END exits. Settings applied per tick.
+- Next: owner pull + BuildAll (no driver reload needed for timer/menu;
+  SCAN driver from de4f848 must be loaded for fast heap scan), run
+  overlay, INSERT, tune FOV until edge boxes align, report value.

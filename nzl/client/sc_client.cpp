@@ -1,4 +1,5 @@
 #include "sc_client.h"
+#include <mmsystem.h>
 #include <cstdio>
 #include <cwchar>
 #include <cstring>
@@ -26,6 +27,12 @@ static NaShm* Send(UINT32 cmd)
 
 bool NaInit()
 {
+    // The driver worker polls with a sub-ms KeDelay, but Windows timer
+    // granularity (~15.6ms default) made EVERY command cost ~16ms
+    // (region scan ~80s, heap scan ~370s). Raising the system timer
+    // resolution to 1ms from the client shrinks that wake latency an
+    // order of magnitude without touching the driver.
+    timeBeginPeriod(1);
     HKEY hk;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\NaCoreFilter",
                       0, KEY_READ, &hk) != ERROR_SUCCESS)
