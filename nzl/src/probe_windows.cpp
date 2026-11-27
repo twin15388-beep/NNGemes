@@ -132,14 +132,24 @@ int main(int argc, char** argv) {
         if (NaRead((uint32_t)pid, r.base, &mz) && mz == 0x5A4D) {
           uint32_t lfanew = 0; NaRead((uint32_t)pid, r.base + 0x3C, &lfanew);
           if (lfanew && lfanew < 0x1000) {
+            // DataDirectory[0] (export) offset inside the optional header
+            // differs by bitness: PE32 = 96, PE32+ (x64 game) = 112.
+            // The previous build always used 96, read garbage as the
+            // export RVA and therefore matched NOTHING on a full scan
+            // (probe-6: 6469 regions, both modules 0x0). Read the magic.
+            uint16_t opt_magic = 0;
+            NaRead((uint32_t)pid, r.base + lfanew + 24, &opt_magic);
+            uint32_t dd_off = (opt_magic == 0x20b) ? 112 : (opt_magic == 0x10b) ? 96 : 0;
             uint32_t export_rva = 0;
-            NaRead((uint32_t)pid, r.base + lfanew + 24 + 96, &export_rva);
+            if (dd_off) NaRead((uint32_t)pid, r.base + lfanew + 24 + dd_off, &export_rva);
             if (export_rva) {
               uint32_t name_rva = 0;
               NaRead((uint32_t)pid, r.base + export_rva + 12, &name_rva);
               char name[64] = {};
               if (name_rva && NaRead((uint32_t)pid, r.base + name_rva, 63, name)) {
                 name[63] = 0;
+                logf("[probe] image candidate base=0x%llx export-name='%s'\n",
+                     (unsigned long long)r.base, name);
                 if (_stricmp(name, "GameAssembly.dll") == 0) found_ga = r.base;
                 if (_stricmp(name, "UnityPlayer.dll") == 0) found_up = r.base;
                 if (found_ga && found_up) {

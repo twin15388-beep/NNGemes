@@ -293,3 +293,12 @@
   for both modules with early exit when both are found.
 - Owner told to Ctrl+C the explorer scan (REGION already proven) and
   rerun the one-pass probe against the GAME, no reboot/driver reload.
+
+## Probe-6 (game pid=3324): full scan, modules NOT found - probe bug
+- One-pass scan completed i=6469 to 0x7fffffff0000 (FAIL there = end of
+  user space, normal), RESULT TRANSPORT_OK, but GameAssembly=0
+  UnityPlayer=0, snapshot fallback FAILED (EAC blocks usermode enum).
+- Bug: export DataDirectory offset used PE32 value 96 for an x64 PE32+
+  image (correct: 112). Export RVA was garbage, name match never fired.
+- Fix: read optional-header magic (0x20b->112, 0x10b->96), log every
+  MEM_IMAGE candidate export name. Rebuild probe only, rerun on game.
