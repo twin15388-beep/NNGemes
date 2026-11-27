@@ -399,3 +399,13 @@
   test_pipeline compile; test_chain ALL PASSED).
 - Next: owner BuildAll, run nzl_studio.exe in match, send console
   output (players list). Then D3D11 overlay on build_draw_list.
+
+## Studio heap scan appears stuck at 768MiB (2026-11-27)
+- Owner: studio scan printed 768MiB +217s then no visible progress for
+  5-10 min. Progress only prints on successful reads at 128MiB marks,
+  so failing/slow chunks are invisible. Added per-region log
+  (base/size), chunk heartbeat every 256 tries with elapsed + fail
+  count, fflush. Studio only - no driver reload needed.
+- If heartbeat shows chunk frozen >2s x many fails: driver worker is
+  wedged on a read (reboot+reload). If chunks advance slowly: a huge
+  region is being walked page-costly - note its base/size from log.

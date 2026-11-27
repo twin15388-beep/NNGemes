@@ -110,11 +110,22 @@ int main() {
       addr = next;
       bool readable = (r.protect == 0x02 || r.protect == 0x04 || r.protect == 0x20 || r.protect == 0x40 || r.protect == 0x80);
       if (r.state != 0x1000 || r.type != 0x20000 || !readable) continue;
+      std::printf("[NZL] scan region base=0x%llx size=%llu MiB\n", (unsigned long long)r.base,
+                  (unsigned long long)(r.size >> 20));
+      std::fflush(stdout);
+      uint64_t fails = 0, tries = 0;
       for (uint64_t o = 0; o < r.size && !game_obj; o += 0x10000) {
         uint64_t chunk = r.base + o;
         uint32_t want = (uint32_t)((r.size - o) < 0x10000 ? (r.size - o) : 0x10000);
         if (chunk >= 0x0000800000000000ULL) continue;
-        if (!mem.read(chunk, buf.data(), want)) continue;
+        tries++;
+        if ((tries & 0xFF) == 0) {
+          std::printf("[NZL] ... chunk 0x%llx +%llums scanned=%lluMiB fails=%llu\n",
+                      (unsigned long long)chunk, (unsigned long long)(GetTickCount64() - t0),
+                      (unsigned long long)(scanned >> 20), (unsigned long long)fails);
+          std::fflush(stdout);
+        }
+        if (!mem.read(chunk, buf.data(), want)) { fails++; continue; }
         scanned += want;
         if ((scanned & 0x7FFFFFFULL) < want)
           std::printf("[NZL] heap scan %llu MiB +%llums\r", (unsigned long long)(scanned >> 20), (unsigned long long)(GetTickCount64() - t0));
