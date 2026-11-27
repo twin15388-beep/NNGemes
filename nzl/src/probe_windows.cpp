@@ -88,10 +88,12 @@ int main(int argc, char** argv) {
   uint64_t peb = NaGetPeb(pid);
   logf("[probe] exe base=0x%llx peb=0x%llx\n", (unsigned long long)base, (unsigned long long)peb);
   bool transport = read_mz_pe((uint32_t)pid, base, "exe");
+  uint64_t ga = NaGetModule((uint32_t)pid, L"GameAssembly.dll");
+  uint64_t up = NaGetModule((uint32_t)pid, L"UnityPlayer.dll");
+  logf("[probe] driver PEB module walk: GameAssembly=0x%llx UnityPlayer=0x%llx\n", (unsigned long long)ga, (unsigned long long)up);
   bool snap = false;
-  uint64_t ga = module_base(pid, L"GameAssembly.dll", &snap);
-  uint64_t up = module_base(pid, L"UnityPlayer.dll", &snap);
-  logf("[probe] module snapshot %s: GameAssembly=0x%llx UnityPlayer=0x%llx\n", snap ? "OK" : "FAILED (EAC may block usermode enum; driver read still usable if base known)", (unsigned long long)ga, (unsigned long long)up);
+  if (!ga) { ga = module_base(pid, L"GameAssembly.dll", &snap); logf("[probe] snapshot fallback GameAssembly=0x%llx (%s)\n", (unsigned long long)ga, snap ? "OK" : "FAILED"); }
+  if (!up) { up = module_base(pid, L"UnityPlayer.dll", &snap); }
   if (ga) transport = read_mz_pe((uint32_t)pid, ga, "GameAssembly") && transport;
   if (ga) {
     NaRegion r{};

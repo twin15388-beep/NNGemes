@@ -192,3 +192,9 @@
 - DbgSd/DbgAcl/DbgAce1/DbgAce2/DbgAce3/DbgDacl/DbgSection = ВСЕ 0x0 — self-relative SD и ACE применены, секция создана успешно.
 - Explorer-тест не выполнен: владелец вставил буквальный текст PID_ПРОВОДНИКА вместо цифры 9492.
 - След: игра Steam -> матч -> NZL-Probe.ps1 от админа. Критерий: section open OK (DACL исправлен?) + GameAssembly MZ/PE OK + TRANSPORT_OK.
+
+## TRANSPORT_OK (probe #5, 2026-11-27)
+- pid=2796, Key/Shm совпали, section open OK (DACL-фикс РАБОТАЕТ), NaInit OK, exe base 0x7ff6506e0000 PEB 0xf4589dc000, exe MZ/PE через драйвер OK. RESULT: TRANSPORT_OK.
+- Снимок модулей из юзермода FAILED (EAC режет) -> GameAssembly база неизвестна.
+- Добавлена команда NA_CMD_MODULE=8: драйвер идёт по PEB->Ldr InMemoryOrderModuleList через MmCopyVirtualMemory, ищет BaseDllName, возвращает DllBase. Клиент NaGetModule(), probe сначала спрашивает драйвер, снимок — fallback.
+- Требуется пересборка драйвера и ОДНА загрузка по протоколу (игра выкл.). ESP-офсеты по-прежнему ждут nzl_dump.zip.

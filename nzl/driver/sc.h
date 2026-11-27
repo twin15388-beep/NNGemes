@@ -10,6 +10,7 @@
 #define NA_CMD_REGION 5
 #define NA_CMD_BATCH  6
 #define NA_CMD_ALLOC  7
+#define NA_CMD_MODULE 8
 
 #define NA_MAX_XFER  0x10000
 #define NA_BATCH_MAX 64

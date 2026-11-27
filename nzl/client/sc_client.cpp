@@ -140,3 +140,15 @@ bool NaAlloc(UINT32 pid, UINT64 size, UINT32 protect, UINT64* out)
 
 NaShm* NaGetShm()  { return g_shm; }
 UINT32 NaGetKey()  { return g_key; }
+
+UINT64 NaGetModule(UINT32 pid, const wchar_t* name)
+{
+    if (!g_shm || !name) return 0;
+    g_shm->pid = pid;
+    memset(g_shm->data, 0, 256);
+    size_t len = wcslen(name);
+    if (len > 63) len = 63;
+    memcpy(g_shm->data, name, len * sizeof(wchar_t));
+    NaShm* s = Send(NA_CMD_MODULE);
+    return (s && s->status >= 0) ? *(UINT64*)s->data : 0;
+}

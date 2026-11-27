@@ -115,6 +115,63 @@ static NTSTATUS NaPeb(ULONG pid, PULONGLONG out)
     return STATUS_SUCCESS;
 }
 
+// Find a loaded module base by walking PEB->Ldr InMemoryOrderModuleList
+// with MmCopyVirtualMemory only (no attach, no SEH). Module name arrives
+// in shm->data as UTF-16, base returns in shm->data.
+static NTSTATUS NaModule(PNA_SHM shm)
+{
+    PEPROCESS proc;
+    NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)shm->pid, &proc);
+    if (!NT_SUCCESS(st)) return st;
+    PUCHAR peb = (PUCHAR)PsGetProcessPeb(proc);
+    if (!peb) { ObDereferenceObject(proc); return STATUS_INVALID_PARAMETER; }
+    ULONGLONG ldr = 0, head = 0, cur = 0;
+    SIZE_T copied = 0;
+    st = MmCopyVirtualMemory(proc, peb + 0x18, PsGetCurrentProcess(), &ldr, sizeof(ldr), KernelMode, &copied);
+    if (!NT_SUCCESS(st) || !ldr) { ObDereferenceObject(proc); return NT_SUCCESS(st) ? STATUS_INVALID_PARAMETER : st; }
+    head = ldr + 0x20;
+    st = MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)head, PsGetCurrentProcess(), &cur, sizeof(cur), KernelMode, &copied);
+    if (!NT_SUCCESS(st)) { ObDereferenceObject(proc); return st; }
+    WCHAR want[64];
+    ULONG wantLen = 0;
+    while (wantLen < 63 && shm->data[wantLen * 2]) {
+        WCHAR c = (WCHAR)(shm->data[wantLen * 2] | (shm->data[wantLen * 2 + 1] << 8));
+        if (c >= L'A' && c <= L'Z') c = (WCHAR)(c + 32);
+        want[wantLen++] = c;
+    }
+    ULONGLONG found = 0;
+    for (ULONG i = 0; i < 512 && cur && cur != head && !found; i++) {
+        ULONGLONG entry = cur - 0x10; // InMemoryOrderLinks offset in LDR_DATA_TABLE_ENTRY
+        ULONGLONG dllBase = 0, nameBuf = 0;
+        USHORT nameLen = 0;
+        MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)(entry + 0x30), PsGetCurrentProcess(), &dllBase, sizeof(dllBase), KernelMode, &copied);
+        MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)(entry + 0x58), PsGetCurrentProcess(), &nameLen, sizeof(nameLen), KernelMode, &copied);
+        MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)(entry + 0x60), PsGetCurrentProcess(), &nameBuf, sizeof(nameBuf), KernelMode, &copied);
+        if (dllBase && nameBuf && nameLen >= 2 && nameLen <= 126) {
+            UCHAR raw[128];
+            RtlZeroMemory(raw, sizeof(raw));
+            SIZE_T got = 0;
+            if (NT_SUCCESS(MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)nameBuf, PsGetCurrentProcess(), raw, nameLen, KernelMode, &got))) {
+                ULONG chars = (ULONG)(got / 2);
+                BOOLEAN eq = (chars == wantLen);
+                for (ULONG k = 0; eq && k < chars; k++) {
+                    WCHAR c = (WCHAR)(raw[k * 2] | (raw[k * 2 + 1] << 8));
+                    if (c >= L'A' && c <= L'Z') c = (WCHAR)(c + 32);
+                    if (c != want[k]) eq = FALSE;
+                }
+                if (eq) found = dllBase;
+            }
+        }
+        ULONGLONG next = 0;
+        if (!NT_SUCCESS(MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)cur, PsGetCurrentProcess(), &next, sizeof(next), KernelMode, &copied))) break;
+        cur = next;
+    }
+    ObDereferenceObject(proc);
+    if (!found) return STATUS_NOT_FOUND;
+    *(ULONGLONG*)shm->data = found;
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS NaRegion(ULONG pid, ULONGLONG addr, PNA_REGION out)
 {
     PEPROCESS proc;
@@ -220,6 +277,9 @@ static VOID NaWorker(PVOID ctx)
                 if (NT_SUCCESS(shm->status)) *(ULONGLONG*)shm->data = val;
                 break;
             }
+            case NA_CMD_MODULE:
+                shm->status = NaModule(shm);
+                break;
             case NA_CMD_REGION:
                 shm->status = NaRegion(shm->pid, shm->address, &shm->region);
                 break;
