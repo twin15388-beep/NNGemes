@@ -14,11 +14,14 @@ Set-Location $root
 Write-Nzl "1/2 driver (MSVC+WDK)..."
 Push-Location (Join-Path $root "nzl\driver")
 $drvLog = Join-Path $root "driver_build.log"
+$drvStale = Join-Path $root "nzl\driver\driver.sys"
+if (Test-Path $drvStale) { Remove-Item $drvStale -Force }
 & cmd /c "build_driver.bat > `"$drvLog`" 2>&1"
+$drvExit = $LASTEXITCODE
 Get-Content $drvLog | ForEach-Object { Write-Host "  $_" }
 $drv = Join-Path $root "nzl\driver\driver.sys"
 Pop-Location
-if (Test-Path $drv) { Write-Nzl "driver.sys OK: $drv" } else { Write-Nzl "driver.sys NOT built - send me the file driver_build.log from the project root." }
+if ($drvExit -eq 0 -and (Test-Path $drv)) { Write-Nzl "driver.sys OK: $drv" } else { Write-Nzl "driver.sys NOT built (exit=$drvExit) - send me the file driver_build.log from the project root." }
 
 Write-Nzl "2/2 NZL executables..."
 $cmake = Get-Command cmake -ErrorAction SilentlyContinue

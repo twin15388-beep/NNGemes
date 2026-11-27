@@ -31,9 +31,21 @@ static PSECURITY_DESCRIPTOR NaSectionSecurity(void)
     st = RtlCreateAcl(acl, sizeof(g_section_acl), ACL_REVISION);
     g_dbg_acl = st;
     if (!NT_SUCCESS(st)) return NULL;
-    g_dbg_ace1 = RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, SeLocalSystemSid);
-    g_dbg_ace2 = RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, SeAliasAdminsSid);
-    g_dbg_ace3 = RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_MAP_READ | SECTION_MAP_WRITE | SECTION_QUERY, SeWorldSid);
+    // SIDs built manually: SeLocalSystemSid/SeAliasAdminsSid/SeWorldSid are
+    // not declared in this WDK (C2065 observed) - do not rely on them.
+    static UCHAR sidSys[32], sidAdm[32], sidWorld[16];
+    SID_IDENTIFIER_AUTHORITY authNt = SECURITY_NT_AUTHORITY;
+    SID_IDENTIFIER_AUTHORITY authWorld = SECURITY_WORLD_SID_AUTHORITY;
+    RtlInitializeSid((PSID)sidSys, &authNt, 1);
+    *RtlSubAuthoritySid((PSID)sidSys, 0) = SECURITY_LOCAL_SYSTEM_RID;
+    RtlInitializeSid((PSID)sidAdm, &authNt, 2);
+    *RtlSubAuthoritySid((PSID)sidAdm, 0) = SECURITY_BUILTIN_DOMAIN_RID;
+    *RtlSubAuthoritySid((PSID)sidAdm, 1) = DOMAIN_ALIAS_RID_ADMINS;
+    RtlInitializeSid((PSID)sidWorld, &authWorld, 1);
+    *RtlSubAuthoritySid((PSID)sidWorld, 0) = SECURITY_WORLD_RID;
+    g_dbg_ace1 = RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, (PSID)sidSys);
+    g_dbg_ace2 = RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, (PSID)sidAdm);
+    g_dbg_ace3 = RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_MAP_READ | SECTION_MAP_WRITE | SECTION_QUERY, (PSID)sidWorld);
     st = RtlSetDaclSecurityDescriptor(&g_section_sd, TRUE, acl, FALSE);
     g_dbg_dacl = st;
     if (!NT_SUCCESS(st)) return NULL;
