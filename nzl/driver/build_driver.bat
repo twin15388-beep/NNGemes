@@ -6,17 +6,25 @@ rem ..\1_run\driver.sys and ..\1_run\kernel-mode.sys (the image kd2 maps).
 rem No Visual Studio WDK integration is required.
 cd /d "%~dp0"
 
-set "WINSDK=C:\Program Files (x86)\Windows Kits\10"
+rem Locate Windows Kits root: registry KitsRoot10 first, then known roots.
+set "WINSDK="
+for /f "tokens=2*" %%A in ('reg query "HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots" /v KitsRoot10 2^>nul') do set "WINSDK=%%B"
+for /f "tokens=2*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots" /v KitsRoot10 2^>nul') do if not defined WINSDK set "WINSDK=%%B"
+if defined WINSDK if "%WINSDK:~-1%"=="\" set "WINSDK=%WINSDK:~0,-1%"
+if not defined WINSDK set "WINSDK=C:\Program Files (x86)\Windows Kits\10"
+if not exist "%WINSDK%\Include" set "WINSDK=C:\Program Files\Windows Kits\10"
 set "SDK="
 for /d %%D in ("%WINSDK%\Include\10.*") do (
     if exist "%%D\km\ntddk.h" set "SDK=%%~nxD"
 )
 if not defined SDK (
-    echo [ERROR] No Windows SDK with WDK kernel headers [km\ntddk.h] under "%WINSDK%\Include".
-    echo         Install "Windows Driver Kit" - VS Installer - Individual components - or the standalone WDK.
+    echo [ERROR] No WDK kernel headers [km\ntddk.h] under "%WINSDK%\Include".
+    echo         Kits found:
+    dir /b "%WINSDK%\Include" 2^>nul
+    echo         Run tools\NZL-FindWdk.ps1 and send its output.
     exit /b 1
 )
-echo Using Windows SDK %SDK%
+echo Using Windows Kits "%WINSDK%" SDK %SDK%
 
 rem Find Visual Studio via vswhere (any drive/edition), fallback to known paths.
 set "VS="
