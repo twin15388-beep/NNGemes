@@ -140,6 +140,22 @@ bool NaBatchRead(UINT32 pid, NaItem* items, UINT32 count, void* out, UINT32 tota
     return true;
 }
 
+UINT32 NaScan(UINT32 pid, UINT64 pattern, UINT64 start, UINT64* candidates, UINT32 maxcand, UINT64* next)
+{
+    if (!g_shm || !candidates || !maxcand || maxcand > 256) return 0;
+    g_shm->pid     = pid;
+    g_shm->address = start;
+    g_shm->count   = maxcand;
+    memcpy(g_shm->data, &pattern, 8);
+    NaShm* s = Send(NA_CMD_SCAN);
+    if (!s || s->status < 0) { if (next) *next = 0; return 0; }
+    UINT32 found = s->count;
+    if (found > maxcand) found = maxcand;
+    memcpy(candidates, s->data, found * 8);
+    if (next) *next = s->address;
+    return found;
+}
+
 bool NaAlloc(UINT32 pid, UINT64 size, UINT32 protect, UINT64* out)
 {
     if (!g_shm) return false;

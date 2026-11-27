@@ -425,3 +425,18 @@
   no FOV; owner must eyeball box alignment and tune).
 - Next: owner BuildAll, run nzl_overlay.exe in match, report whether
   boxes sit on players + FOV correction needed.
+
+## Speed upgrade: NA_CMD_SCAN kernel-side search (2026-11-27)
+- Overlay found Game at 1344MiB (~370s client scan). Too slow.
+- Driver NA_CMD_SCAN=9: kernel walks MEM_PRIVATE/COMMIT/readable
+  regions (region info to stack local while attached, copies via
+  MmCopy into pool buffer after detach pattern, NaUserRange on every
+  chunk), returns <=256 klass candidates + resume VA per call, max
+  128MiB per call so protocol never wedges (client Send timeout 2s).
+- Client NaScan() wraps it; overlay heap scan now: scan->validate
+  candidates by klass chain->resume. Should drop root search to
+  seconds. Snapshot id/dead also batched (was 2 direct reads/player).
+- REQUIRES manual: new driver.sys -> reboot (unload old manual map),
+  NZL-LoadDriver once, game, nzl_overlay. Old driver + new overlay =
+  SCAN unsupported -> Game=0 fast (expected, not a crash).
+- Snapshot batches: values/transforms/positions/id+dead all batch.

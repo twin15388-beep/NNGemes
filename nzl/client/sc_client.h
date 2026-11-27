@@ -9,6 +9,7 @@
 #define NA_CMD_BATCH  6
 #define NA_CMD_ALLOC  7
 #define NA_CMD_MODULE 8
+#define NA_CMD_SCAN   9
 
 #define NA_MAX_XFER  0x10000
 #define NA_BATCH_MAX 64
@@ -67,6 +68,12 @@ bool   NaQueryRegion(UINT32 pid, UINT64 addr, NaRegion* out);
 // dominates small reads). Items carry (address, offset-in-out, size);
 // failed items come back zeroed. Total bytes must be <= NA_MAX_XFER.
 bool   NaBatchRead(UINT32 pid, NaItem* items, UINT32 count, void* out, UINT32 total);
+// Kernel-side qword scan (NA_CMD_SCAN): finds up to maxcand candidate
+// addresses holding `pattern` in committed MEM_PRIVATE readable regions
+// starting at `start`. Returns candidate count; *next = resume VA
+// (0 = exhausted). Client validates candidates (klass chain) and
+// resumes until the object is found.
+UINT32 NaScan(UINT32 pid, UINT64 pattern, UINT64 start, UINT64* candidates, UINT32 maxcand, UINT64* next);
 bool   NaAlloc(UINT32 pid, UINT64 size, UINT32 protect, UINT64* out);
 
 // typed read helpers

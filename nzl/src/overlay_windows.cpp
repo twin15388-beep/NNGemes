@@ -104,13 +104,25 @@ static std::vector<nzl::PlayerSnap> snapshot_fast(Ctx& c, const nzl::Vec3f& loca
     if (tr) pi.push_back(NaItem{tr + c.off.ctm_x, (uint32_t)(i * 12), 12});
   }
   if (pi.empty() || !NaBatchRead(c.pid, pi.data(), (uint32_t)pi.size(), pb.data(), n * 12)) return out;
+  // id + dead in ONE batch: 2 items per char, packed stride 8
+  // (id i32 @+0, dead u8 @+4). Was 2 direct reads per player per tick.
+  std::vector<uint8_t> ib(n * 8, 0);
+  {
+    std::vector<NaItem> ii;
+    for (int i = 0; i < n; i++) {
+      if (!chars[i]) continue;
+      ii.push_back(NaItem{chars[i] + c.off.char_id, (uint32_t)(i * 8), 4});
+      ii.push_back(NaItem{chars[i] + c.off.char_is_dead, (uint32_t)(i * 8 + 4), 1});
+    }
+    if (!ii.empty()) NaBatchRead(c.pid, ii.data(), (uint32_t)ii.size(), ib.data(), n * 8);
+  }
   for (int i = 0; i < n; i++) {
     if (!chars[i]) continue;
     float xyz[3] = {}; std::memcpy(xyz, pb.data() + i * 12, 12);
     if (xyz[0] == 0 && xyz[1] == 0 && xyz[2] == 0) continue;
     nzl::PlayerSnap s; s.addr = chars[i];
-    if (auto id = c.mem->i32(chars[i] + c.off.char_id)) s.id = *id;
-    if (auto d = c.mem->u8(chars[i] + c.off.char_is_dead)) s.dead = (*d != 0);
+    std::memcpy(&s.id, ib.data() + i * 8, 4);
+    s.dead = ib[i * 8 + 4] != 0;
     s.pos = {xyz[0], xyz[1], xyz[2]};
     float dx = s.pos.x - local.x, dy = s.pos.y - local.y, dz = s.pos.z - local.z;
     s.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
@@ -178,43 +190,37 @@ int main() {
       std::printf("[NZL] klass %s validation FAILED. Be in menu/match.\n", slots[i].want); return 6;
     }
   }
-  std::printf("[NZL] classes OK. Heap scan for Game (minutes)...\n");
+  std::printf("[NZL] classes OK. Kernel-side heap scan for Game...\n");
   nzl::Offsets off;
   auto obj_klass = [&](uint64_t o) -> uint64_t { auto k = o ? mem.ptr(o) : std::nullopt; return k ? *k : 0; };
   uint64_t game_obj = 0;
   {
-    std::vector<unsigned char> buf(0x10000);
-    uint64_t addr = 0x10000, scanned = 0;
-    for (int i = 0; i < 16384 && addr < 0x0000800000000000ULL && !game_obj; i++) {
-      NaRegion r{};
-      if (!NaQueryRegion(pid, addr, &r)) break;
-      uint64_t next = r.base + (r.size ? r.size : 0x1000);
-      if (next <= addr) break;
-      addr = next;
-      bool readable = (r.protect == 0x02 || r.protect == 0x04 || r.protect == 0x20 || r.protect == 0x40 || r.protect == 0x80);
-      if (r.state != 0x1000 || r.type != 0x20000 || !readable) continue;
-      for (uint64_t o = 0; o < r.size && !game_obj; o += 0x10000) {
-        uint64_t chunk = r.base + o;
-        uint32_t want = (uint32_t)((r.size - o) < 0x10000 ? (r.size - o) : 0x10000);
-        if (chunk >= 0x0000800000000000ULL) continue;
-        if (!mem.read(chunk, buf.data(), want)) continue;
-        scanned += want;
-        if ((scanned & 0x3FFFFFFULL) < want) { std::printf("[NZL] heap scan %llu MiB\r", (unsigned long long)(scanned >> 20)); std::fflush(stdout); }
-        for (uint32_t b = 0; b + 8 <= want; b += 8) {
-          uint64_t v = 0; std::memcpy(&v, buf.data() + b, 8);
-          if (v != klass[0]) continue;
-          uint64_t cand = chunk + b;
-          auto gm = mem.ptr(cand + off.game_model);
-          if (!gm || obj_klass(*gm) != klass[1]) { gm = mem.ptr(cand + off.game_model_alt); if (!gm || obj_klass(*gm) != klass[1]) continue; }
-          auto bm = mem.ptr(*gm + off.game_battle);
-          if (!bm || obj_klass(*bm) != klass[2]) continue;
-          auto be = mem.ptr(*bm + off.battle_entities);
-          if (!be || obj_klass(*be) != klass[3]) continue;
-          game_obj = cand;
-        }
+    // NA_CMD_SCAN: driver walks regions + copies in-kernel, returns up
+    // to 256 klass candidates per call; we validate each by the class
+    // chain and resume from the returned VA. Old client-side scan took
+    // ~370s for 1.4GB; this should be seconds.
+    uint64_t start = 0x10000, cands[256];
+    ULONGLONG t0 = GetTickCount64();
+    while (start && !game_obj) {
+      uint64_t next = 0;
+      uint32_t found = NaScan(pid, klass[0], start, cands, 256, &next);
+      for (uint32_t i = 0; i < found && !game_obj; i++) {
+        uint64_t cand = cands[i];
+        auto gm = mem.ptr(cand + off.game_model);
+        if (!gm || obj_klass(*gm) != klass[1]) { gm = mem.ptr(cand + off.game_model_alt); if (!gm || obj_klass(*gm) != klass[1]) continue; }
+        auto bm = mem.ptr(*gm + off.game_battle);
+        if (!bm || obj_klass(*bm) != klass[2]) continue;
+        auto be = mem.ptr(*bm + off.battle_entities);
+        if (!be || obj_klass(*be) != klass[3]) continue;
+        game_obj = cand;
       }
+      std::printf("[NZL] scan resume=0x%llx candidates=%u +%llums\r",
+                  (unsigned long long)next, found, (unsigned long long)(GetTickCount64() - t0));
+      std::fflush(stdout);
+      start = next;
     }
-    std::printf("\n[NZL] Game=0x%llx (scanned %llu MiB)\n", (unsigned long long)game_obj, (unsigned long long)(scanned >> 20));
+    std::printf("\n[NZL] Game=0x%llx in %llums (kernel scan)\n", (unsigned long long)game_obj,
+                (unsigned long long)(GetTickCount64() - t0));
   }
   if (!game_obj) { std::printf("[NZL] Game not found. Be in a match.\n"); return 7; }
   Ctx ctx; ctx.pid = pid; ctx.mem = &mem; ctx.off = off;
