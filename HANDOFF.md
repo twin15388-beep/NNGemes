@@ -342,3 +342,14 @@
   no static Game/UnityEntry field exists in dump - root strategy is
   the next design step (class-pointer instance scan or GOM), must be
   validated live by class-name/chain sanity, never assumed.
+
+## Owner Steam build CONFIRMED = 26866884 (2026-11-27)
+- appmanifest_4262460.acf (ROB RUN, AppID 4262460): buildid 26866884.
+  Exactly the latest SDK folder cross-checked above. All field offsets
+  from SDK 26866884 dump.cs are the build-matched set (Game.GameModel
+  primary 0xD8, alt 0xD0 kept for safety).
+- script.json has NO Start.UnityEntry_TypeInfo slot (type never used as
+  a metadata usage), so Il2CppClass* for UnityEntry cannot come from a
+  TypeInfo slot. Root-finder must derive klass another way
+  (MetadataRegistration parse / instance scan) and validate live via
+  resolve_chain + class sanity. Do NOT hardcode a root RVA.
