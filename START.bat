@@ -4,7 +4,7 @@ chcp 65001 >nul
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 for /f %%a in ('echo prompt $E^| cmd') do set "ESC=%%a"
-title by govno leak
+title NZL Studio
 pushd "%~dp0"
 if errorlevel 1 goto folder_error
 if not exist "RobRun.exe" goto missing_exe
@@ -65,15 +65,17 @@ goto hold
 
 :banner
 echo.
-echo %ESC%[93m    $$$  $  $       $$$  $$$ $  $ $  $  $$$      $    $$$   $$  $  $ 
-echo %ESC%[93m    $  $  $$       $    $  $ $  $ $$ $ $  $      $    $    $  $ $ $  
-echo %ESC%[93m    $$$    $       $ $$ $  $ $  $ $ $$ $  $      $    $$$  $$$$ $$   
-echo %ESC%[93m    $  $   $       $  $ $  $  $$  $  $ $  $      $    $    $  $ $ $  
-echo %ESC%[93m    $$$    $        $$$  $$$  $$  $  $  $$$      $$$  $$$  $  $ $  $ 
-echo.
-echo %ESC%[33m    $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-echo %ESC%[93m    $                         by govno leak                         $
-echo %ESC%[33m    $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+echo %ESC%[35m    $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+echo %ESC%[95m    $                                                               $
+echo %ESC%[95m    $   NN   NN  ZZZZZZZ  LL          SSSSS  TTTTTTT UU   UU DDDD    $
+echo %ESC%[95m    $   NNN  NN     ZZZ   LL          SS        TTT   UU   UU DD  D   $
+echo %ESC%[95m    $   NN N NN    ZZZ    LL          SSSSS     TTT   UU   UU DD  D   $
+echo %ESC%[95m    $   NN  NNN   ZZZ     LL               SS   TTT   UU   UU DD  D   $
+echo %ESC%[95m    $   NN   NN  ZZZZZZZ  LLLLLLL     SSSSS     TTT    UUUUU  DDDD    $
+echo %ESC%[95m    $                                                               $
+echo %ESC%[35m    $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+echo %ESC%[95m    $                         NZL Studio                              $
+echo %ESC%[35m    $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 echo.
 echo %ESC%[0m
 exit /b 0
