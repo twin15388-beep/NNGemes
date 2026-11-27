@@ -302,3 +302,14 @@
   image (correct: 112). Export RVA was garbage, name match never fired.
 - Fix: read optional-header magic (0x20b->112, 0x10b->96), log every
   MEM_IMAGE candidate export name. Rebuild probe only, rerun on game.
+
+## Probe-7: MODULES FOUND (2026-11-27)
+- Game pid=17164: GameAssembly=0x7ffe2ee50000 UnityPlayer=0x7ffe97270000
+  via region-scan export-name match (PE32+ offset fix works), MZ/PE OK,
+  RESULT TRANSPORT_OK. Client-side module lookup fully validated.
+- NZL-Dump failed: installed Il2CppDumper is net6 build, machine lacks
+  .NET 6 runtime ("You must install or update .NET"). Latest release
+  v6.7.46 assets checked: Il2CppDumper-win-*.zip is the framework build.
+  NZL-GetDumper now replaces a runtimeconfig (net6+) copy and prefers
+  the non-net win asset (runs on Win11 .NET Framework 4.8).
+- Next: owner reruns GetDumper -> Dump -> sends nzl_dump.zip (offsets).

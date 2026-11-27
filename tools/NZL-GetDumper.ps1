@@ -1,4 +1,4 @@
-﻿<#
+<#
 NZL Studio - скачать Il2CppDumper (Perfare) с GitHub в C:\Il2CppDumper.
 Запуск:
   powershell -ExecutionPolicy Bypass -File tools\NZL-GetDumper.ps1
@@ -8,14 +8,24 @@ NZL Studio - скачать Il2CppDumper (Perfare) с GitHub в C:\Il2CppDumper.
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 function Write-Nzl([string]$m) { Write-Host "[NZL] $m" -ForegroundColor Magenta }
 $dst = "C:\Il2CppDumper"
-if (Test-Path (Join-Path $dst "Il2CppDumper.exe")) { Write-Nzl "Il2CppDumper уже на месте: $dst\Il2CppDumper.exe"; exit 0 }
+# A modern .NET build (net6/net7/net8) leaves Il2CppDumper.runtimeconfig.json
+# next to the exe and dies with "You must install or update .NET" on machines
+# without that runtime (observed live). The net472 build runs on the .NET
+# Framework 4.8 shipped with Windows 11 - prefer it, replace a net6 copy.
+if ((Test-Path (Join-Path $dst "Il2CppDumper.exe")) -and
+    -not (Test-Path (Join-Path $dst "Il2CppDumper.runtimeconfig.json"))) {
+    Write-Nzl "Il2CppDumper уже на месте: $dst\Il2CppDumper.exe"; exit 0
+}
+if (Test-Path (Join-Path $dst "Il2CppDumper.runtimeconfig.json")) {
+    Write-Nzl "Найдена .NET (net6+) сборка дампера - заменяю на net472, чтобы не ставить runtime."
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 try {
     $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/Perfare/Il2CppDumper/releases/latest" -Headers @{ "User-Agent" = "NZL-Studio" }
 } catch { Write-Nzl "FAIL: GitHub API недоступен: $($_.Exception.Message). Скачай вручную: https://github.com/Perfare/Il2CppDumper/releases"; exit 2 }
 Write-Nzl "Релиз: $($rel.tag_name)"
-$asset = $rel.assets | Where-Object { $_.name -like "*net6-win*.zip" } | Select-Object -First 1
-if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -like "*win*.zip" -and $_.name -notlike "*net6*" } | Select-Object -First 1 }
+$asset = $rel.assets | Where-Object { $_.name -like "*net472*win*.zip" } | Select-Object -First 1
+if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -like "*win*.zip" -and $_.name -notlike "*net6*" -and $_.name -notlike "*net7*" -and $_.name -notlike "*net8*" } | Select-Object -First 1 }
 if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1 }
 if (-not $asset) { Write-Nzl "FAIL: zip-ассет не найден в релизе. Скачай вручную с GitHub releases."; exit 3 }
 Write-Nzl "Качаю: $($asset.name)"
