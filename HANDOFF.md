@@ -139,3 +139,10 @@
 - build_driver.bat (MSVC 14.51.36231, SDK 10.0.26100.0): compile sc_drv.c OK, link OK, BUILD_OK, driver.sys в nzl/driver/.
 - Все exe собраны: nzl_probe.exe, nzl_studio.exe, тесты.
 - След: kdmapper.exe в nzl/driver -> NZL-LoadDriver (игра выключена) -> TRANSPORT_LOADED -> игра Steam/матч -> nzl_probe.exe -> nzl_probe.txt.
+
+## ДРАЙВЕР ЗАГРУЖЕН у владельца (2026-11-27)
+- kdmapper собран из TheCruZ (kdmapper_Release.exe 151552) -> nzl/driver/kdmapper.exe.
+- NZL-LoadDriver: Secure Boot=True, VBS/HVCI=0. kdmapper: NtLoadDriver 0x0, PiDDBCacheTable cleaned, MmUnloadedDrivers cleaned, WdFilterDriverList cleaned, image base 0xFFFFE10D911F0000, DriverEntry 0x0, success.
+- Реестр HKLM\SYSTEM\NaCoreFilter: Key=1388125119, Shm=C309E858 -> TRANSPORT_LOADED.
+- Драйвер выгрузке не подлежит (DriverUnload не задан) — до конца сессии Windows он в ядре.
+- След: игра через Steam, матч, nzl_probe.exe -> nzl_probe.txt (TRANSPORT_OK/FAIL чтения GameAssembly под EAC).
