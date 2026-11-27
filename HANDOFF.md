@@ -409,3 +409,19 @@
 - If heartbeat shows chunk frozen >2s x many fails: driver worker is
   wedged on a read (reboot+reload). If chunks advance slowly: a huge
   region is being walked page-costly - note its base/size from log.
+
+## ESP DATA LIVE + overlay built (2026-11-27)
+- nzl_studio run (pid=5200, owner match): GameAssembly found, all
+  klass NAME_OK, heap scan 1370MiB Game=0x18444e39f00, chain ok,
+  camera pos/fwd sane, players snapshot=26 with plausible positions/
+  distances (mix alive/DEAD), draw commands projected @1920x1080
+  fov90 (5 text cmds). RESULT: ESP_DATA_OK. (The earlier "stuck at
+  768MiB" was just slow scan; same binary finished.)
+- Added NaBatchRead client API (NA_CMD_BATCH, one worker wake per
+  up-to-64 reads) and nzl_overlay.exe: purple GDI layered click-through
+  overlay tracking game client rect, re-snapshots every 100ms via
+  batch reads, boxes+labels from build_draw_list, END exits,
+  UP/DOWN adjusts FOV (default 90, UNVERIFIED - BattleCameraModel has
+  no FOV; owner must eyeball box alignment and tune).
+- Next: owner BuildAll, run nzl_overlay.exe in match, report whether
+  boxes sit on players + FOV correction needed.

@@ -125,6 +125,21 @@ bool NaQueryRegion(UINT32 pid, UINT64 addr, NaRegion* out)
     return true;
 }
 
+bool NaBatchRead(UINT32 pid, NaItem* items, UINT32 count, void* out, UINT32 total)
+{
+    if (!g_shm || !items || !count || count > NA_BATCH_MAX || !total || total > NA_MAX_XFER)
+        return false;
+    g_shm->pid   = pid;
+    g_shm->count = count;
+    g_shm->total = total;
+    memcpy(g_shm->items, items, count * sizeof(NaItem));
+    NaShm* s = Send(NA_CMD_BATCH);
+    if (!s || s->status < 0)
+        return false;
+    memcpy(out, s->data, total);
+    return true;
+}
+
 bool NaAlloc(UINT32 pid, UINT64 size, UINT32 protect, UINT64* out)
 {
     if (!g_shm) return false;

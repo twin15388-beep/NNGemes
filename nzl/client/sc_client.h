@@ -62,6 +62,11 @@ bool   NaWrite(UINT32 pid, UINT64 addr, UINT32 size, void* in);
 UINT64 NaGetBase(UINT32 pid);
 UINT64 NaGetPeb(UINT32 pid);
 bool   NaQueryRegion(UINT32 pid, UINT64 addr, NaRegion* out);
+// Batch: up to NA_BATCH_MAX items read by the driver in ONE command
+// (one worker wake instead of one per read - the per-command poll tick
+// dominates small reads). Items carry (address, offset-in-out, size);
+// failed items come back zeroed. Total bytes must be <= NA_MAX_XFER.
+bool   NaBatchRead(UINT32 pid, NaItem* items, UINT32 count, void* out, UINT32 total);
 bool   NaAlloc(UINT32 pid, UINT64 size, UINT32 protect, UINT64* out);
 
 // typed read helpers
