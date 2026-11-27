@@ -16,15 +16,20 @@ static ChainResult resolve_from_game(const IMemory& m, uint64_t ue, uint64_t gam
   auto cam=follow(m,*bm,o.battle_camera,"BattleModel.BattleCameraModel",r); if(!cam) return r; r.camera_model=*cam;
   r.ok=true; r.stage="ok"; return r;
 }
+ChainResult resolve_chain_from_game(const IMemory& m, uint64_t game, const Offsets& o){
+  ChainResult a=resolve_from_game(m,game,game,o.game_model,o);
+  if(a.ok) return a;
+  if(o.game_model_alt && o.game_model_alt!=o.game_model){
+    ChainResult b=resolve_from_game(m,game,game,o.game_model_alt,o);
+    if(b.ok) return b;
+  }
+  return a;
+}
 ChainResult resolve_chain(const IMemory& m, uint64_t ue, const Offsets& o){
   ChainResult r; r.unity_entry=ue;
   auto game=follow(m,ue,o.unity_entry_game,"UnityEntry._game",r); if(!game) return r;
-  ChainResult a=resolve_from_game(m,ue,*game,o.game_model,o);
-  if(a.ok) return a;
-  if(o.game_model_alt && o.game_model_alt!=o.game_model){
-    ChainResult b=resolve_from_game(m,ue,*game,o.game_model_alt,o);
-    if(b.ok) return b;
-  }
+  ChainResult a=resolve_chain_from_game(m,*game,o);
+  a.unity_entry=ue;
   return a;
 }
 std::optional<DictHeader> read_dict(const IMemory& m, uint64_t dict, const Offsets& o){

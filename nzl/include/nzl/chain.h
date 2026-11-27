@@ -28,6 +28,9 @@ struct Offsets {
 };
 std::optional<uint64_t> follow(const IMemory& m, uint64_t base, uint32_t off, const char* stage, ChainResult& r);
 ChainResult resolve_chain(const IMemory& m, uint64_t unity_entry_instance, const Offsets& o);
+// Root found directly as a live Game object (TypeInfo-klass heap scan,
+// validated live in probe-9): chain from Game without UnityEntry.
+ChainResult resolve_chain_from_game(const IMemory& m, uint64_t game, const Offsets& o);
 struct DictHeader { uint64_t entries=0; int32_t count=0; };
 std::optional<DictHeader> read_dict(const IMemory& m, uint64_t dict, const Offsets& o);
 // entries: hash i32 @+0, next i32 @+4, key i32 @+8, value ptr @+0x10, stride 0x18

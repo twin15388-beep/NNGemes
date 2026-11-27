@@ -383,3 +383,19 @@
   client heap scan also skips non-user chunks. This crash class is now
   a returned error, not a bugcheck.
 - Next: rebuild, ONE load, game menu/match, probe; watch [root] scan.
+
+## ROOT FOUND LIVE (probe-9) + studio wired (2026-11-27)
+- probe-9: ROOT GAME FOUND @0x18444e39f00 after 1344MiB/374s scan,
+  GameModel 0x18468cc4840, BattleModel, WorldEntities, Dict entries
+  count=25 (live match characters), CameraModel camPos (6.3,39.15,28.5).
+  Dozens of false Game-klass candidates rejected by chain validation.
+- chain: resolve_chain_from_game() exported (resolve_chain delegates).
+- nzl_studio (main_windows.cpp) now runs the whole pipeline itself:
+  region-scan GameAssembly (no usermode enum), TypeInfo klass name
+  checks, heap scan + Game validation, chain, camera vectors,
+  snapshot_players + build_draw_list printed. FOV still default 90
+  (BattleCameraModel has no FOV field) - overlay step must wire native
+  Camera FOV/window size. Core tests pass (g++ sandbox: test_chain,
+  test_pipeline compile; test_chain ALL PASSED).
+- Next: owner BuildAll, run nzl_studio.exe in match, send console
+  output (players list). Then D3D11 overlay on build_draw_list.
