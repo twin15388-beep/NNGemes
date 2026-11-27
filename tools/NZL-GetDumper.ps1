@@ -1,4 +1,4 @@
-<#
+﻿<#
 NZL Studio - скачать Il2CppDumper (Perfare) с GitHub в C:\Il2CppDumper.
 Запуск:
   powershell -ExecutionPolicy Bypass -File tools\NZL-GetDumper.ps1
