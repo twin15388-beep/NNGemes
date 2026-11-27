@@ -260,3 +260,12 @@
   detach. No other attach paths dereference System pointers (audited).
 - Status: fix NOT yet built/loaded. Next: owner rebuilds driver only,
   loads once, probe WITHOUT game first (explorer pid REGION test), then game.
+
+## Probe upload after fix (2026-11-27) - OLD FILE, REGION not tested
+- Owner uploaded nzl_probe-5.txt identical to historic probe #5
+  (pid=2796, Key=3374768350, Shm=58921339, "module snapshot FAILED").
+- It lacks current-probe lines "region-scan modules:" / "GameAssembly
+  region:" -> built/run BEFORE the NaRegion fix, REGION never called.
+- Fix remains UNVERIFIED live. Need: git pull (ce870ab) -> BuildAll ->
+  LoadDriver -> probe with explorer pid -> nzl_probe.txt containing
+  region-scan line, sent back.
