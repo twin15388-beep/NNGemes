@@ -121,11 +121,20 @@ static NTSTATUS NaRegion(ULONG pid, ULONGLONG addr, PNA_REGION out)
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
     KAPC_STATE apc;
-    KeStackAttachProcess(proc, &apc);
     MEMORY_BASIC_INFORMATION mbi;
     SIZE_T ret;
+    RtlZeroMemory(&mbi, sizeof(mbi));
+    KeStackAttachProcess(proc, &apc);
     st = ZwQueryVirtualMemory(ZwCurrentProcess(), (PVOID)(ULONG_PTR)addr,
                               MemoryBasicInformation, &mbi, sizeof(mbi), &ret);
+    KeUnstackDetachProcess(&apc);
+    // CRITICAL (BSOD #1-#3 root cause, RVA 0x1998): `out` points into the
+    // shared section view (g_shm_kernel), which is mapped only into the
+    // System process address space. Writing *out WHILE attached to the
+    // target process dereferences that VA in the TARGET address space -
+    // a wild user-mode pointer (observed: write to 0x...0034, BugCheck
+    // 0x1E). Fill the local `mbi` while attached, copy to `out` only
+    // after detach, when the System address space is current again.
     if (NT_SUCCESS(st)) {
         out->base    = (ULONGLONG)(ULONG_PTR)mbi.BaseAddress;
         out->size    = (ULONGLONG)mbi.RegionSize;
@@ -134,7 +143,6 @@ static NTSTATUS NaRegion(ULONG pid, ULONGLONG addr, PNA_REGION out)
         out->type    = mbi.Type;
         out->pad     = 0;
     }
-    KeUnstackDetachProcess(&apc);
     ObDereferenceObject(proc);
     return st;
 }
@@ -149,8 +157,11 @@ static NTSTATUS NaAlloc(ULONG pid, ULONGLONG sz, ULONG prot, PULONGLONG out)
     PVOID base = NULL;
     SIZE_T size = (SIZE_T)sz;
     st = ZwAllocateVirtualMemory(ZwCurrentProcess(), &base, 0, &size, MEM_COMMIT | MEM_RESERVE, prot);
-    if (NT_SUCCESS(st)) *out = (ULONGLONG)(ULONG_PTR)base;
     KeUnstackDetachProcess(&apc);
+    // Same rule as NaRegion: never dereference System-process pointers
+    // (here `out` happens to be a kernel-stack local, but keep the
+    // ordering so no future caller passes shared-section memory).
+    if (NT_SUCCESS(st)) *out = (ULONGLONG)(ULONG_PTR)base;
     ObDereferenceObject(proc);
     return st;
 }

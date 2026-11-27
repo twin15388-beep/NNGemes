@@ -245,3 +245,18 @@
 - kdmapper кладёт .text со сдвигом -0x1000 (header skipped), поэтому runtime +0x998 = PE RVA 0x1998 в driver.sys.
 - Нужно: dumpbin /disasm driver.sys у владельца, смотреть RVA 0x1998 — какая функция пишет [ptr+0x34]=0x10000 (кандидат: поле region в NA_SHM +0x34 или MBI-копия в NaRegion).
 - Драйвер НЕ загружать.
+
+## BSOD #3 ROOT CAUSE + FIX (disasm.txt, 2026-11-27)
+- dumpbin: PE RVA 0x1998 = `mov [rbx+34h],rax` inside NaWorker's NA_CMD_REGION
+  branch, inlined NaRegion: rbx=shm (g_shm_kernel), +0x34 = NA_SHM.region.base,
+  rax = mbi.BaseAddress (0x10000 - first region base, NOT NA_MAX_XFER).
+- Root cause: NaRegion wrote `out->...` (= &shm->region) WHILE
+  KeStackAttachProcess(target) was active. g_shm_kernel is a view mapped
+  only into the System process; under attach that VA (0x2010bc60000)
+  resolves in the TARGET address space -> wild write 0x2010bc60034, 0x1E.
+  Explains all 3 BSODs (any REGION command); READ/BASE probe #5 was fine.
+- Fix in sc_drv.c: NaRegion fills stack-local mbi while attached, copies to
+  out AFTER KeUnstackDetachProcess. NaAlloc likewise writes *out after
+  detach. No other attach paths dereference System pointers (audited).
+- Status: fix NOT yet built/loaded. Next: owner rebuilds driver only,
+  loads once, probe WITHOUT game first (explorer pid REGION test), then game.
