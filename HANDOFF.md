@@ -113,3 +113,9 @@
 - UnityPlayer.dll 36529064, SHA e702f4b9763e3b1e095ef1c4fc2da6625dd6340475398838be4357648cad2544
 - EAC: EasyAntiCheat_EOS_Setup.exe + Settings.json + Certificates, start_protected_game=true, sentry/crashpad=true.
 - ВАЖНО: SHA GameAssembly НЕ совпадает со старым S1 (03003754...) — все старые офсеты к этому билду НЕ применять до Il2CppDumper по новым файлам.
+
+## Probe без офсетов (2026-11-27)
+- Dropbox Sharedmem — тот же рев, что уже интегрирован (nzl/driver, nzl/client, коммит c19a2ad). Новее на Dropbox нет.
+- Сделан `nzl/src/probe_windows.cpp` -> `nzl_probe.exe` (Windows): НЕ требует офсетов дампа. Проверяет: pid, NaInit (HKLM\SYSTEM\NaCoreFilter), NaGetBase/PEB, чтение MZ/PE через драйвер (exe + GameAssembly.dll), NaQueryRegion, снимок модулей. Пишет nzl_probe.txt, код 0 = TRANSPORT_OK.
+- `tools/NZL-BuildAll.ps1` — сборка всего одной командой: драйвер (build_driver.bat) + nzl_probe/nzl_studio (cmake).
+- Linux-проверка: cmake configure/build 0, nzl_tests PASSED. Windows exe здесь не собирался.
