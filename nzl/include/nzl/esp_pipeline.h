@@ -11,6 +11,9 @@ struct CameraView {
 };
 struct PlayerSnap {
   uint64_t addr = 0; int32_t id = 0; Vec3f pos{}; bool dead = false; float dist = 0;
+  int32_t hp = -1;    // -1 = unknown (HP chain marked unverified until live check)
+  int32_t maxhp = 0;
+  bool armor = false; // HasArmor primitive (unverified layout, live check)
 };
 struct DrawCmd {
   enum Kind { Line, Rect, Text } kind = Line;

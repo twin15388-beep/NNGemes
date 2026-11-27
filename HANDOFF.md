@@ -459,3 +459,24 @@
 - Next: owner pull + BuildAll (no driver reload needed for timer/menu;
   SCAN driver from de4f848 must be loaded for fast heap scan), run
   overlay, INSERT, tune FOV until edge boxes align, report value.
+
+## Overlay v3: menu/skeleton/HP/armor/loot/radar/aim (2026-11-27)
+- Owner asks: INSERT menu with skeleton/HP/armor toggles, aim, loot
+  ESP, radar; repeats not-all + slow; boxes only right when crosshair
+  on player (centre-accurate = basis/FOV issue).
+- Projection: basis now from BattleCameraModel LookAtCameraOrientation
+  quaternion (+0x2C, dump field) by default, menu switch to old
+  Forward/Right/Up fields. FOV still adjustable (no native FOV source).
+- Menu 15 items: FOV, MaxDist, ShowDead, Boxes, Skeleton (screen-space
+  stick figure - bone-accurate needs SkeletonModel bones, NOT wired),
+  Labels, HP bar*, Armor mark*, Loot ESP, Radar, Radar range, Aim
+  (hold RMB, SendInput relative, smooth), Aim FOV px, Aim smooth,
+  Basis quat. *HP chain PrivateModel+0x10->Health+0x1B0->data+0x10->
+  value+0x18, max @+0x20; armor HasArmor +0x1B8 same primitive layout;
+  both dump-derived, layout UNVERIFIED - owner must confirm in game.
+- Loot: WorldEntities._loots +0x38 (dump), LootModel.Transform +0x20,
+  positions via CharacterTransformModel layout (unverified for loot
+  concrete type, zero/finite filtered).
+- Aim/Radar implemented in overlay (radar rotates by camera yaw).
+- Next: owner BuildAll (no driver reload), INSERT in game, test each
+  toggle, report HP/armor/loot correctness + FOV/basis behaviour.
