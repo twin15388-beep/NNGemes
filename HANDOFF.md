@@ -169,3 +169,8 @@
 - 2026-11-27 18:03:47: bugcheck 0x0000001e KMODE_EXCEPTION_NOT_HANDLED (c0000005 ACCESS_VIOLATION, fault ffffe10d94df2f54 — диапазон ручного мапа kdmapper, наш драйвер), Kernel-Power 41.
 - Minidump: C:\Windows\Minidump\112726-11109-01.dmp (196096) -> crash_info\112726-11109-01.dmp у владельца. В Dropbox закинут, но Dropbox в этом чате ВЫКЛЮЧЕН — забрать не могу, жду включения приложения или прямой загрузки .dmp сюда.
 - Драйвер НЕ загружать до анализа дампа (!analyze -v / разбор модулей и стека).
+
+## Дамп получен из Dropbox (2026-11-27)
+- /112726-11109-01.dmp 196096, PAGEDU64. DUMP_HEADER64: BugCheckCode@0x38=0x1e, p1=c0000005, p2(адрес исключения)=ffffe10d94df2f54, p3=1 (ЗАПИСЬ), p4=0000020718900454 (дикий адрес записи).
+- Вывод: ядро писало по повреждённому указателю из драйвера в диапазоне ручного мапа. Кто именно — по стеку из !analyze.
+- `tools/NZL-AnalyzeDump.ps1`: cdb.exe из WDK Debuggers (у владельца D:\Windows Kits\10\Debuggers\x64\cdb.exe), !analyze -v;.ecxr;kv;lm -> crash_info\analyze.txt. Жду файл.
