@@ -227,3 +227,8 @@
 - Откаченный driver.sys (14848, без NA_CMD_MODULE) загружен: base 0xFFFF980BA098A000, DriverEntry 0x0, Key=0x633f31d6 (1665085910), Shm=F28BC231.
 - DbgSd/DbgAcl/DbgAce1/DbgAce2/DbgAce3/DbgDacl/DbgSection = все 0x0.
 - Ожидается: игра Steam -> матч -> NZL-Probe (админ) -> region-scan базы GameAssembly/UnityPlayer + TRANSPORT_OK.
+
+## BSOD #3 (2026-11-27) — СТОП, сбор kernel dump
+- Владелец: "опять вылетел" (стадия не уточнена). Драйвер больше НЕ загружать.
+- CrashDumpEnabled=2 был подтверждён до загрузки -> должен существовать C:\Windows\MEMORY.DMP с полным стеком.
+- Нужно: NZL-CrashInfo.ps1 + NZL-AnalyzeDump.ps1 (берёт MEMORY.DMP) -> crash_info\analyze.txt + crash_info.txt + на каком шаге упало (загрузка/игра/probe).
