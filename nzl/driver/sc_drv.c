@@ -12,6 +12,27 @@ NTSYSAPI PVOID NTAPI PsGetProcessPeb(PEPROCESS);
 
 static ULONG           g_key;
 static volatile LONG   g_active;
+static SECURITY_DESCRIPTOR g_section_sd;
+static UCHAR           g_section_acl[512];
+
+// Build a DACL for the shared section: SYSTEM + Administrators full,
+// everyone else map read/write. Without this, ZwCreateSection from a
+// system thread leaves the section SYSTEM-only and every usermode
+// client gets ERROR_ACCESS_DENIED (observed live, win32=5).
+static PSECURITY_DESCRIPTOR NaSectionSecurity(void)
+{
+    PACL acl = (PACL)g_section_acl;
+    NTSTATUS st = RtlCreateSecurityDescriptor(&g_section_sd, SECURITY_DESCRIPTOR_REVISION);
+    if (!NT_SUCCESS(st)) return NULL;
+    st = RtlCreateAcl(acl, sizeof(g_section_acl), ACL_REVISION);
+    if (!NT_SUCCESS(st)) return NULL;
+    RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, SeLocalSystemSid);
+    RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, SeAliasAdminsSid);
+    RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_MAP_READ | SECTION_MAP_WRITE | SECTION_QUERY, SeWorldSid);
+    st = RtlSetDaclSecurityDescriptor(&g_section_sd, TRUE, acl, FALSE);
+    if (!NT_SUCCESS(st)) return NULL;
+    return &g_section_sd;
+}
 static PVOID           g_shm_kernel;
 static HANDLE          g_shm_handle;
 static HANDLE          g_worker_thread;
@@ -300,6 +321,7 @@ static VOID NaStartup(PVOID ctx)
     RtlInitUnicodeString(&shmName, shmBuf);
     OBJECT_ATTRIBUTES oa;
     InitializeObjectAttributes(&oa, &shmName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    oa.SecurityDescriptor = NaSectionSecurity();
     LARGE_INTEGER secSize;
     secSize.QuadPart = sizeof(NA_SHM);
     NTSTATUS st = ZwCreateSection(&g_shm_handle, SECTION_ALL_ACCESS, &oa,
