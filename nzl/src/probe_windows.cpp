@@ -88,9 +88,41 @@ int main(int argc, char** argv) {
   uint64_t peb = NaGetPeb(pid);
   logf("[probe] exe base=0x%llx peb=0x%llx\n", (unsigned long long)base, (unsigned long long)peb);
   bool transport = read_mz_pe((uint32_t)pid, base, "exe");
-  uint64_t ga = NaGetModule((uint32_t)pid, L"GameAssembly.dll");
-  uint64_t up = NaGetModule((uint32_t)pid, L"UnityPlayer.dll");
-  logf("[probe] driver PEB module walk: GameAssembly=0x%llx UnityPlayer=0x%llx\n", (unsigned long long)ga, (unsigned long long)up);
+  // Module bases WITHOUT new kernel code: scan MEM_IMAGE regions via
+  // NaQueryRegion and match the PE export DLL name via NaRead.
+  auto find_image = [&](const char* want) -> uint64_t {
+    uint64_t addr = 0x10000;
+    for (int i = 0; i < 8192 && addr < 0x0000800000000000ULL; i++) {
+      NaRegion r{};
+      if (!NaQueryRegion((uint32_t)pid, addr, &r)) break;
+      uint64_t next = r.base + (r.size ? r.size : 0x1000);
+      if (next <= addr) break;
+      if (r.type == 0x1000000 /*MEM_IMAGE*/ && r.base) {
+        uint16_t mz = 0;
+        if (NaRead((uint32_t)pid, r.base, &mz) && mz == 0x5A4D) {
+          uint32_t lfanew = 0; NaRead((uint32_t)pid, r.base + 0x3C, &lfanew);
+          if (lfanew && lfanew < 0x1000) {
+            uint32_t export_rva = 0;
+            NaRead((uint32_t)pid, r.base + lfanew + 24 + 96, &export_rva);
+            if (export_rva) {
+              uint32_t name_rva = 0;
+              NaRead((uint32_t)pid, r.base + export_rva + 12, &name_rva);
+              char name[64] = {};
+              if (name_rva && NaRead((uint32_t)pid, r.base + name_rva, 63, name)) {
+                name[63] = 0;
+                if (_stricmp(name, want) == 0) return r.base;
+              }
+            }
+          }
+        }
+      }
+      addr = next;
+    }
+    return 0;
+  };
+  uint64_t ga = find_image("GameAssembly.dll");
+  uint64_t up = find_image("UnityPlayer.dll");
+  logf("[probe] region-scan modules: GameAssembly=0x%llx UnityPlayer=0x%llx\n", (unsigned long long)ga, (unsigned long long)up);
   bool snap = false;
   if (!ga) { ga = module_base(pid, L"GameAssembly.dll", &snap); logf("[probe] snapshot fallback GameAssembly=0x%llx (%s)\n", (unsigned long long)ga, snap ? "OK" : "FAILED"); }
   if (!up) { up = module_base(pid, L"UnityPlayer.dll", &snap); }

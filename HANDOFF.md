@@ -208,3 +208,10 @@
 - Владелец сообщил: крашнулось так же (стадия не уточнена). Драйвер НЕ загружать.
 - NZL-AnalyzeDump предпочитает C:\Windows\MEMORY.DMP (kernel dump) — нужен настоящий стек.
 - Нужно: NZL-CrashInfo.ps1 + NZL-AnalyzeDump.ps1 -> analyze.txt + на каком шаге упало.
+
+## BSOD #2 анализ (analyze-2.txt)
+- Bugcheck тот же 0x1e c0000005 write, адрес ffffa488b9e8bec8, write 0x14dbca20034, PROCESS=ROB RUN.exe, uptime 8:45.
+- НО: Failure.Bucket=AV_W_nt!KiDoubleFaultAbort; стек: RtlDispatchException -> RtlpExecuteHandlerForException -> _C_specific_handler -> RtlUnwindEx -> RtlRaiseStatus -> KiDoubleFaultAbort. "Unable to get exception context".
+- Интерпретация: первичное исключение в вручную замапленном образе (нет зарегистрированной unwind-информации kdmapper-образа), при его обработке обработчик лёг повторно -> double fault. Точную функцию triage не даёт (kernel dump не был включён: SetKernelDump владелец пропустил, analyze снова triage).
+- Решение: NA_CMD_MODULE (добавлена после успешного TRANSPORT_OK) УДАЛЕНА из драйвера — откат к составу команд успешной сборки. Поиск GameAssembly/UnityPlayer перенесён в клиент probe: скан MEM_IMAGE регионов через NaQueryRegion + чтение PE export name через NaRead (новых ядерных путей нет).
+- Драйвер НЕ загружать до отдельного решения владельца с полным пониманием риска. Два BSOD подряд на kdmapper-транспорте зафиксированы.
