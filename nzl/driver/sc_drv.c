@@ -14,6 +14,9 @@ static ULONG           g_key;
 static volatile LONG   g_active;
 static SECURITY_DESCRIPTOR g_section_sd;
 static UCHAR           g_section_acl[512];
+static NTSTATUS        g_dbg_sd = 0xEEEE0001, g_dbg_acl = 0xEEEE0002, g_dbg_ace1 = 0xEEEE0003,
+                       g_dbg_ace2 = 0xEEEE0004, g_dbg_ace3 = 0xEEEE0005, g_dbg_dacl = 0xEEEE0006,
+                       g_dbg_section = 0xEEEE0007;
 
 // Build a DACL for the shared section: SYSTEM + Administrators full,
 // everyone else map read/write. Without this, ZwCreateSection from a
@@ -23,13 +26,16 @@ static PSECURITY_DESCRIPTOR NaSectionSecurity(void)
 {
     PACL acl = (PACL)g_section_acl;
     NTSTATUS st = RtlCreateSecurityDescriptor(&g_section_sd, SECURITY_DESCRIPTOR_REVISION);
+    g_dbg_sd = st;
     if (!NT_SUCCESS(st)) return NULL;
     st = RtlCreateAcl(acl, sizeof(g_section_acl), ACL_REVISION);
+    g_dbg_acl = st;
     if (!NT_SUCCESS(st)) return NULL;
-    RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, SeLocalSystemSid);
-    RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, SeAliasAdminsSid);
-    RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_MAP_READ | SECTION_MAP_WRITE | SECTION_QUERY, SeWorldSid);
+    g_dbg_ace1 = RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, SeLocalSystemSid);
+    g_dbg_ace2 = RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_ALL_ACCESS, SeAliasAdminsSid);
+    g_dbg_ace3 = RtlAddAccessAllowedAce(acl, ACL_REVISION, SECTION_MAP_READ | SECTION_MAP_WRITE | SECTION_QUERY, SeWorldSid);
     st = RtlSetDaclSecurityDescriptor(&g_section_sd, TRUE, acl, FALSE);
+    g_dbg_dacl = st;
     if (!NT_SUCCESS(st)) return NULL;
     return &g_section_sd;
 }
@@ -326,6 +332,7 @@ static VOID NaStartup(PVOID ctx)
     secSize.QuadPart = sizeof(NA_SHM);
     NTSTATUS st = ZwCreateSection(&g_shm_handle, SECTION_ALL_ACCESS, &oa,
                                   &secSize, PAGE_READWRITE, SEC_COMMIT, NULL);
+    g_dbg_section = st;
     if (!NT_SUCCESS(st)) goto done;
 
     SIZE_T viewSize = sizeof(NA_SHM);
@@ -348,6 +355,14 @@ static VOID NaStartup(PVOID ctx)
         ZwSetValueKey(hKey, &valName, 0, REG_DWORD, &g_key, sizeof(g_key));
         RtlInitUnicodeString(&valName, L"Shm");
         ZwSetValueKey(hKey, &valName, 0, REG_SZ, shmBuf + 18, 9 * sizeof(WCHAR));
+        struct { const WCHAR* n; NTSTATUS v; } dbg[] = {
+            { L"DbgSd", g_dbg_sd }, { L"DbgAcl", g_dbg_acl }, { L"DbgAce1", g_dbg_ace1 },
+            { L"DbgAce2", g_dbg_ace2 }, { L"DbgAce3", g_dbg_ace3 }, { L"DbgDacl", g_dbg_dacl },
+            { L"DbgSection", g_dbg_section } };
+        for (ULONG i = 0; i < sizeof(dbg) / sizeof(dbg[0]); i++) {
+            RtlInitUnicodeString(&valName, dbg[i].n);
+            ZwSetValueKey(hKey, &valName, 0, REG_DWORD, &dbg[i].v, sizeof(dbg[i].v));
+        }
         ZwClose(hKey);
     }
 
