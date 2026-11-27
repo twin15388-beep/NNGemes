@@ -124,3 +124,6 @@
 - `nzl/include/nzl/esp_pipeline.h` + `src/esp_pipeline.cpp`: snapshot_players (dict -> id/dead/pos/dist, сортировка), world_to_screen (та же математика что cpp/), build_draw_list (фиолетовый Rect 1.8m + Text #id dist, отсев dead/behind/max_dist).
 - `nzl/tests/test_pipeline.cpp`: 8/8 OK на FakeMemory. cmake build 0.
 - Статус ESP честно: конвейер готов и протестирован изолированно. В игре ESP НЕТ: нет (1) офсетов нового билда (жду nzl_dump.zip), (2) корня (static/TypeInfo из дампа + живое подтверждение), (3) D3D11-окна отрисовки DrawCmd на Windows (не собиралось здесь).
+
+## Скрипт загрузки драйвера (2026-11-27)
+- `tools/NZL-LoadDriver.ps1` (админ): проверки admin/driver.sys/kdmapper/игра выключена, инфо SecureBoot+HVCI, kdmapper, проверка HKLM\SYSTEM\NaCoreFilter, вердикт TRANSPORT_LOADED. Порядок: pull -> BuildAll -> LoadDriver -> игра Steam -> nzl_probe.exe -> nzl_probe.txt мне.
