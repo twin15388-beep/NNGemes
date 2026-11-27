@@ -15,6 +15,12 @@ $root = Split-Path $PSScriptRoot -Parent
 $dst = Join-Path $root "nzl\driver\kdmapper.exe"
 if (Test-Path $dst) { Write-Nzl "kdmapper.exe уже на месте: $dst"; exit 0 }
 
+# Defender keeps deleting kdmapper.exe - exclude the driver folder first (needs admin, best effort).
+try {
+    Add-MpPreference -ExclusionPath (Join-Path $root "nzl\driver") -ErrorAction Stop
+    Write-Nzl "Defender exclusion added for nzl\driver"
+} catch { Write-Nzl "Defender exclusion not added (run as admin once): $($_.Exception.Message)" }
+
 $src = "D:\kdmapper-src"
 if (-not (Test-Path (Join-Path $src "kdmapper.sln"))) {
     Write-Nzl "Клонирую TheCruZ/kdmapper в $src ..."
@@ -41,5 +47,10 @@ if (-not $exe) {
     exit 4
 }
 Copy-Item $exe.FullName $dst -Force
+Start-Sleep -Seconds 3
+if (-not (Test-Path $dst)) {
+    Write-Nzl "FAIL: kdmapper.exe снова удалён сразу после копирования - это Defender. Запусти скрипт ОТ АДМИНИСТРАТОРА (исключение папки) или добавь вручную: Windows Security -> Virus protection -> Exclusions -> D:\NZL Rob run\nzl\driver"
+    exit 5
+}
 Write-Nzl "kdmapper.exe OK: $dst"
 Write-Nzl "Дальше (админ, игра выключена): powershell -ExecutionPolicy Bypass -File tools\NZL-LoadDriver.ps1"
