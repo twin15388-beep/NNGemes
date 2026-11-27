@@ -84,5 +84,8 @@ reader абстракция, chain-resolver, Windows-skeleton без драйв�
 `nzl/driver/` — драйвер общей памяти (build_driver.bat, MSVC+WDK -> driver.sys,
 загрузка kdmapper от администратора), `nzl/client/` — клиент (NaInit читает
 `HKLM\SYSTEM\NaCoreFilter`). NZL читает игру только через него
-(`DriverMemory`). Драйвер после загрузки не выгружается (DriverUnload не задан) —
-перезагрузка Windows для снятия.
+(`DriverMemory`). kdmapper вручную отображает драйвер, поэтому его нельзя
+безопасно снять как обычную службу; он остаётся в памяти до конца сессии Windows.
+Повторный запуск launcher/overlay использует уже загруженный экземпляр и не
+требует перезагрузки. Перезагрузка нужна только для замены/снятия `driver.sys`;
+не запускай kdmapper повторно поверх работающего экземпляра.

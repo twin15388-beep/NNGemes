@@ -1,9 +1,9 @@
 ﻿<#
 NZL Studio - загрузка Sharedmem Driver (Windows, PowerShell от АДМИНИСТРАТОРА).
-Делает: проверка driver.sys и kdmapper.exe -> запуск kdmapper -> проверка
-HKLM\SYSTEM\NaCoreFilter (Key + Shm) -> вердикт TRANSPORT_LOADED / FAIL.
-Игру в этот момент НЕ запускать. Драйвер после загрузки не выгружается
-(DriverUnload не задан) - снятие только перезагрузкой Windows.
+Делает: если драйвер уже есть в этой сессии — использует его повторно;
+иначе проверяет driver.sys/kdmapper, загружает и проверяет HKLM\SYSTEM\NaCoreFilter.
+Первичную загрузку делай до старта игры. Ручной kdmapper-драйвер не выгружается:
+перезагрузка нужна только для его замены/снятия, а не при каждом запуске overlay.
 
 Использование (из корня проекта NZL, PowerShell от администратора):
   powershell -ExecutionPolicy Bypass -File tools\NZL-LoadDriver.ps1
@@ -28,6 +28,23 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     exit 2
 }
 Write-Nzl "Администратор: OK"
+
+# A kdmapper image has no safe service-manager unload path. Reuse the
+# current transport across overlay/game launches instead of mapping a
+# second copy (which has caused crashes in the past).
+$reg = "HKLM:\SYSTEM\NaCoreFilter"
+if (Test-Path $reg) {
+    $loaded = Get-ItemProperty $reg -ErrorAction SilentlyContinue
+    if ($loaded.Key -and -not [string]::IsNullOrWhiteSpace([string]$loaded.Shm)) {
+        Write-Nzl "Драйвер уже загружен в этой сессии (Key=$($loaded.Key), Shm=$($loaded.Shm))."
+        Write-Nzl "Повторно kdmapper не запускаю: overlay можно открывать без перезагрузки."
+        Write-Nzl "Перезагрузка нужна только для замены/снятия вручную отображённого driver.sys."
+        exit 0
+    }
+    Write-Nzl "FAIL: HKLM\SYSTEM\NaCoreFilter существует, но Key/Shm неполные."
+    Write-Nzl "Не загружаю второй экземпляр поверх возможного остатка драйвера; сначала перезагрузи Windows."
+    exit 8
+}
 
 # --- driver.sys ---
 if ($DriverSys -eq "") { $DriverSys = Join-Path $root "nzl\driver\driver.sys" }
@@ -64,14 +81,15 @@ if ($cd -ne 2) {
 }
 Write-Nzl "Kernel dump включён (CrashDumpEnabled=2): OK"
 
-# --- Защита от двойной загрузки в одной сессии ---
-if (Test-Path "HKLM:\SYSTEM\NaCoreFilter") {
-    $old = Get-ItemProperty "HKLM:\SYSTEM\NaCoreFilter" -ErrorAction SilentlyContinue
-    if ($old.Key) {
-        Write-Nzl "FAIL: драйвер УЖЕ загружен в этой сессии (Key=$($old.Key) Shm=$($old.Shm))."
-        Write-Nzl "Второй kdmapper поверх первого - кандидат на BSOD. Перезагрузи Windows и грузи один раз."
-        exit 8
+# --- Повторная проверка перед kdmapper: не маппить второй экземпляр ---
+if (Test-Path $reg) {
+    $old = Get-ItemProperty $reg -ErrorAction SilentlyContinue
+    if ($old.Key -and -not [string]::IsNullOrWhiteSpace([string]$old.Shm)) {
+        Write-Nzl "Драйвер уже загружен параллельным запуском (Key=$($old.Key), Shm=$($old.Shm)); повторное отображение пропущено."
+        exit 0
     }
+    Write-Nzl "FAIL: появилось неполное состояние HKLM\SYSTEM\NaCoreFilter; второй экземпляр загружать небезопасно."
+    exit 8
 }
 
 # --- Игра должна быть выключена на момент загрузки ---
@@ -115,5 +133,6 @@ Write-Nzl "TRANSPORT_LOADED: sharedmem-драйвер жив, ключ опуб�
 Write-Nzl "Дальше: 1) запусти игру через Steam, зайди в матч; 2) выполни:"
 Write-Nzl '  "D:\NZL Rob run\build-nzl\Release\nzl_probe.exe"'
 Write-Nzl "3) пришли файл nzl_probe.txt оттуда, где запускал probe."
-Write-Nzl "Снятие драйвера: только перезагрузка Windows."
+Write-Nzl "Повторный запуск overlay не требует перезагрузки: драйвер останется загруженным."
+Write-Nzl "Перезагружай Windows только если нужно заменить/снять этот driver.sys или транспорт завис."
 exit 0

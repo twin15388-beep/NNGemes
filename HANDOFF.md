@@ -564,3 +564,19 @@
   CMake is not installed here; no Windows/MSVC+WDK build or live-match rate
   measurement has been performed, so the actual FPS remains to be confirmed
   by the displayed status in-game.
+
+## Reuse the loaded driver without rebooting (2026-11-27)
+- `tools/NZL-LoadDriver.ps1` now returns success when both volatile
+  `HKLM\SYSTEM\NaCoreFilter\Key` and `Shm` values are present, before checking
+  `driver.sys`/kdmapper or the initial crash-dump prerequisite. Re-running the
+  app/launcher in the same Windows session reuses the mapped driver.
+- The one-file BAT generator now checks both values, reuses a complete state,
+  and fails closed on a partial registry state instead of mapping a second copy.
+- This is reuse, not hot-unload/reload: kdmapper's manual map has no safe
+  service-manager unload path; `DriverUnload` is not wired. Reboot remains
+  required only to replace/remove `driver.sys` (or recover from a stale/partial
+  transport). Never run kdmapper twice over the same live driver; prior crashes
+  make manual unmapping an unacceptable experiment. First-time dump policy setup
+  may still require one reboot when changing `CrashDumpEnabled`.
+- Windows PowerShell/package runtime validation is still needed; only static
+  review and `git diff --check` are available in the sandbox.

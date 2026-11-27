@@ -4,7 +4,8 @@ Produces a single NZL-Studio.bat in the project root with driver.sys,
 kdmapper.exe and nzl_overlay.exe embedded as base64 inside the .bat.
 The recipient gets ONE file: double-click it, it self-elevates,
 extracts itself to %LOCALAPPDATA%\NZL-Studio (settings persist there),
-loads the driver via kdmapper, waits for the game, starts the overlay.
+reuses an already loaded driver or maps it once via kdmapper, waits for the
+game, then starts the overlay.
 No zip, no folders, no Visual Studio / WDK on the recipient PC.
 Usage: powershell -ExecutionPolicy Bypass -File tools\NZL-Package.ps1
 #>
@@ -41,11 +42,21 @@ echo [NZL] Extracting...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=[IO.File]::ReadAllText('%~f0'); $m=[regex]::Matches($t,'(?ms):::NZL_FILE (\S+)\s+([A-Za-z0-9+/=\s]+?):::NZL_END'); foreach($x in $m){ $b=[Convert]::FromBase64String(($x.Groups[2].Value -replace '\s','')); [IO.File]::WriteAllBytes((Join-Path $env:LOCALAPPDATA ('NZL-Studio\'+$x.Groups[1].Value)), $b) }"
 if not exist "%NZLDIR%\nzl_overlay.exe" ( echo [NZL] Extract FAILED. & pause & exit /b )
 echo [NZL] Files ready in %NZLDIR%
+reg query "HKLM\SYSTEM\NaCoreFilter" >nul 2>&1
+if errorlevel 1 goto load_driver
 reg query "HKLM\SYSTEM\NaCoreFilter" /v Key >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [NZL] Driver already loaded in this Windows session - skipping.
-    goto game
-)
+if errorlevel 1 goto driver_state_bad
+reg query "HKLM\SYSTEM\NaCoreFilter" /v Shm >nul 2>&1
+if errorlevel 1 goto driver_state_bad
+echo [NZL] Driver already loaded in this Windows session - reusing it.
+echo [NZL] No reboot is needed to relaunch the overlay.
+goto game
+:driver_state_bad
+echo [NZL] FAIL: driver registry state is incomplete. Refusing to map another copy.
+echo [NZL] Reboot Windows before trying to load the driver again.
+pause
+exit /b 1
+:load_driver
 tasklist /FI "IMAGENAME eq ROB RUN.exe" | find /I "ROB RUN.exe" >nul
 if %errorlevel% equ 0 (
     echo [NZL] FAIL: ROB RUN is already running. Close the game,
