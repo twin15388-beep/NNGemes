@@ -34,7 +34,7 @@ Write-Nzl "Собираю kdmapper (Release x64)..."
 Push-Location $src
 & $msbuild kdmapper.sln /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v145 /p:WindowsTargetPlatformVersion=10.0.26100.0 /m /nologo /v:minimal 2>&1 | ForEach-Object { Write-Host "  $_" }
 Pop-Location
-$exe = Get-ChildItem -Path $src -Filter "kdmapper.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+$exe = Get-ChildItem -Path $src -Filter "kdmapper*.exe" -Recurse -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
 if (-not $exe) {
     Write-Nzl "FAIL: kdmapper.exe после сборки не найден. Пришли последние 30 строк вывода MSBuild выше."
     Write-Nzl "Частая причина: старый toolset в .sln. Тогда открой kdmapper.sln в Visual Studio, Retarget solution, собери Release x64 вручную и скопируй exe в nzl\driver\kdmapper.exe."
