@@ -265,6 +265,9 @@ int main(int argc, char** argv) {
         for (uint64_t off = 0; off < r.size && !found_game; off += 0x10000) {
           uint64_t chunk = r.base + off;
           uint32_t want = (uint32_t)((r.size - off) < 0x10000 ? (r.size - off) : 0x10000);
+          // Never even ask the driver for non-user ranges (BSOD #4 class):
+          // the driver now rejects them too, this keeps the log honest.
+          if (chunk >= 0x0000800000000000ULL || want > 0x0000800000000000ULL - chunk) continue;
           if (!NaRead((uint32_t)pid, chunk, want, buf.data())) continue;
           scanned += want;
           if ((scanned & 0x7FFFFFFULL) < want)

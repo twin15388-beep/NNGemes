@@ -368,3 +368,18 @@
 - Unverified live; scan speed ~64KB/16ms worst case - watch scanned
   MiB progress in log. Next: owner pull/build, game in menu/match,
   NZL-Probe, send nzl_probe.txt with [root] lines.
+
+## BSOD #4 analysis + fix (2026-11-27 23:14)
+- probe-8: modules found, ALL TypeInfo NAME_OK (Game klass
+  0x12162111e30 etc.), heap scan reached 256MiB+ then BSOD.
+- BugCheck 0x50 PAGE_FAULT read @0xfffffede9deede7f, PROCESS ROB RUN.
+  Trap: nt!memcpy+0xf mov r11,[rdx] <- MiCopyVirtualMemory+0x34e <-
+  MmCopyVirtualMemory+0x2d <- driver (0xffff8503`7b01378e). A driver
+  copy was fed a KERNEL-range source VA; MmCopyVirtualMemory in
+  KernelMode does not probe -> nt memcpy bugcheck. Root-scan design
+  itself (klass validation) worked; the transport lacked range checks.
+- Fix: driver NaRead/NaWrite/NaRegion reject addr/end outside
+  [0,0x800000000000) with STATUS_INVALID_PARAMETER before MmCopy;
+  client heap scan also skips non-user chunks. This crash class is now
+  a returned error, not a bugcheck.
+- Next: rebuild, ONE load, game menu/match, probe; watch [root] scan.

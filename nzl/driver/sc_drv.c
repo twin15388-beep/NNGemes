@@ -63,8 +63,23 @@ NTSYSAPI NTSTATUS NTAPI MmCopyVirtualMemory(PEPROCESS SourceProcess, PVOID Sourc
     PEPROCESS TargetProcess, PVOID TargetAddress, SIZE_T BufferSize,
     KPROCESSOR_MODE PreviousMode, PSIZE_T ReturnSize);
 
+// BSOD #4 (0x50, nt!memcpy <- MiCopyVirtualMemory <- driver): a copy was
+// requested with a kernel-range source VA (0xfffffede9deede7f).
+// MmCopyVirtualMemory with PreviousMode=KernelMode does NOT probe the
+// addresses - it raw-memcpys and bugchecks. Every address that arrives
+// via the shared section is untrusted: reject anything outside the
+// user range (and any end-overflow) BEFORE MmCopy ever sees it.
+#define NA_USER_LIMIT 0x0000800000000000ULL
+static BOOLEAN NaUserRange(ULONGLONG addr, ULONGLONG sz)
+{
+    if (addr >= NA_USER_LIMIT) return FALSE;
+    if (sz > NA_USER_LIMIT - addr) return FALSE;
+    return TRUE;
+}
+
 static NTSTATUS NaRead(ULONG pid, ULONGLONG addr, ULONG sz, PVOID out)
 {
+    if (!NaUserRange(addr, sz)) return STATUS_INVALID_PARAMETER;
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
@@ -77,6 +92,7 @@ static NTSTATUS NaRead(ULONG pid, ULONGLONG addr, ULONG sz, PVOID out)
 
 static NTSTATUS NaWrite(ULONG pid, ULONGLONG addr, ULONG sz, PVOID in)
 {
+    if (!NaUserRange(addr, sz)) return STATUS_INVALID_PARAMETER;
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
@@ -117,6 +133,7 @@ static NTSTATUS NaPeb(ULONG pid, PULONGLONG out)
 
 static NTSTATUS NaRegion(ULONG pid, ULONGLONG addr, PNA_REGION out)
 {
+    if (!NaUserRange(addr, 1)) return STATUS_INVALID_PARAMETER;
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
