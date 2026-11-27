@@ -18,7 +18,8 @@ static void logf(const char* fmt, ...) {
   char buf[1024]; va_list ap; va_start(ap, fmt);
   vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
   std::printf("%s", buf);
-  if (g_log) std::fputs(buf, g_log);
+  std::fflush(stdout);
+  if (g_log) { std::fputs(buf, g_log); std::fflush(g_log); }
 }
 static DWORD find_pid(const wchar_t* name) {
   HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -90,11 +91,33 @@ int main(int argc, char** argv) {
   bool transport = read_mz_pe((uint32_t)pid, base, "exe");
   // Module bases WITHOUT new kernel code: scan MEM_IMAGE regions via
   // NaQueryRegion and match the PE export DLL name via NaRead.
+  // Single REGION test FIRST: this is the command that used to BSOD and
+  // the first thing after the exe PE read. If the output stops after the
+  // "single NaQueryRegion..." line, the driver worker is stuck inside
+  // REGION; if it prints OK, the hang is scan volume, not the driver.
+  logf("[probe] single NaQueryRegion(exe base) ...\n");
+  {
+    NaRegion r0{};
+    ULONGLONG t0 = GetTickCount64();
+    bool ok0 = NaQueryRegion((uint32_t)pid, base, &r0);
+    logf("[probe] single NaQueryRegion -> %s in %llums base=0x%llx size=0x%llx state=0x%x protect=0x%x type=0x%x\n",
+         ok0 ? "OK" : "FAIL/TIMEOUT", (unsigned long long)(GetTickCount64() - t0),
+         (unsigned long long)r0.base, (unsigned long long)r0.size, r0.state, r0.protect, r0.type);
+  }
   auto find_image = [&](const char* want) -> uint64_t {
     uint64_t addr = 0x10000;
+    ULONGLONG scan_t0 = GetTickCount64();
+    logf("[probe] region-scan start want=%s\n", want);
     for (int i = 0; i < 8192 && addr < 0x0000800000000000ULL; i++) {
       NaRegion r{};
-      if (!NaQueryRegion((uint32_t)pid, addr, &r)) break;
+      if (!NaQueryRegion((uint32_t)pid, addr, &r)) {
+        logf("[probe] region-scan %s: NaQueryRegion FAIL at i=%d addr=0x%llx (scan ends)\n",
+             want, i, (unsigned long long)addr);
+        break;
+      }
+      if ((i % 256) == 0)
+        logf("[probe] region-scan %s: i=%d addr=0x%llx +%llums\n", want, i,
+             (unsigned long long)addr, (unsigned long long)(GetTickCount64() - scan_t0));
       uint64_t next = r.base + (r.size ? r.size : 0x1000);
       if (next <= addr) break;
       if (r.type == 0x1000000 /*MEM_IMAGE*/ && r.base) {

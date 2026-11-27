@@ -269,3 +269,16 @@
 - Fix remains UNVERIFIED live. Need: git pull (ce870ab) -> BuildAll ->
   LoadDriver -> probe with explorer pid -> nzl_probe.txt containing
   region-scan line, sent back.
+
+## Probe hang after exe PE (2026-11-27, post-fix build)
+- Owner ran NEW driver: pid=9424 Key=3097888868 Shm=2912FB83, NaInit OK,
+  exe base/PE read OK, then output stops - hang is at/after first
+  NaQueryRegion in region-scan (next code after exe PE check).
+- Client Send() has 2000ms timeout, so a dead worker yields FAIL, not an
+  infinite hang; slow full-address-space scan (2x up to 8192 iters, no
+  progress logs, no fflush) looks identical to a hang.
+- probe_windows.cpp: logf now fflushes stdout+file; added single
+  NaQueryRegion(exe base) test with timing BEFORE the scan, scan-start
+  and every-256-iterations progress, FAIL line with i/addr.
+- Owner: Ctrl+C old probe, git pull + BuildAll (probe only changed),
+  rerun probe WITHOUT reboot/reload (driver stays loaded this session).
