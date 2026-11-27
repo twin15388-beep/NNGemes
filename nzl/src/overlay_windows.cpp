@@ -88,9 +88,12 @@ static bool basis_from_quat(const nzl::IMemory& m, uint64_t quat_addr,
 }
 struct RenderEnt {
   float hx = 0, hy = 0, fx = 0, fy = 0; // head / feet screen
+  float ax = 0, ay = 0;                 // aim point screen (selected bone)
   nzl::Vec3f pos{}; int id = 0; float dist = 0; bool dead = false;
   int hp = -1, maxhp = 0; bool armor = false;
+  int role = -2; // PlayerRole via description Index: 0 Settler 1 Robber 2 Cop 3 Citizen 4 Prisoner (unverified mapping)
 };
+struct CarEnt { nzl::Vec3f pos{}; float dist = 0; float sx = 0, sy = 0; bool on = false; };
 struct LootEnt { nzl::Vec3f pos{}; float dist = 0; float sx = 0, sy = 0; bool on = false; };
 struct Ctx {
   DWORD pid = 0;
@@ -99,6 +102,7 @@ struct Ctx {
   nzl::ChainResult chain;
   std::vector<RenderEnt> render;
   std::vector<LootEnt> loot;
+  std::vector<CarEnt> cars;
   nzl::Vec3f cam_fwd{0, 0, 1}, cam_right{1, 0, 0};
   float fov = 90.0f;
   int width = 1920, height = 1080;
@@ -107,8 +111,18 @@ struct Ctx {
   bool show_dead = false, show_boxes = true, show_skeleton = false,
        show_text = true, show_hp = false, show_armor = false,
        show_loot = false, show_radar = false, aim = false, basis_quat = true;
+  bool show_roles = true, show_cars = false, tracers = false, visible_only = false;
   float max_dist = 500.0f, aim_fov = 150.0f, aim_smooth = 5.0f, radar_range = 120.0f;
+  int aim_bone = 0;   // 0 Head 1 Chest 2 Pelvis
+  int aim_key = 0;    // index into kAimKeys
+  int menu_key = 0;   // index into kMenuKeys
 };
+static const int kAimKeys[] = {VK_RBUTTON, VK_LBUTTON, VK_MENU, VK_SHIFT};
+static const char* kAimKeyNames[] = {"RMB", "LMB", "ALT", "SHIFT"};
+static const int kMenuKeys[] = {VK_INSERT, VK_DELETE, VK_HOME, VK_F9};
+static const char* kMenuKeyNames[] = {"INSERT", "DELETE", "HOME", "F9"};
+static const char* kBoneNames[] = {"Head", "Chest", "Pelvis"};
+static const char* kRoleNames[] = {"SETTLER", "ROBBER", "COP", "CITIZEN", "PRISONER"};
 // Generic dictionary walk: entries array length, skip hash<0 slots,
 // batched in chunks respecting the 64-item driver batch cap.
 static std::vector<uint64_t> dict_values(Ctx& c, uint64_t dict) {
@@ -197,6 +211,18 @@ static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& l
         if (prim) { auto data = c.mem->ptr(*prim + 0x10); if (data) { auto v = c.mem->u8(*data + 0x18); if (v) s.armor = *v != 0; } }
       }
     }
+    if (c.show_roles) {
+      // Role: char+0x208 IPrimitiveModel<PlayerRoleDescription> ->
+      // data+0x10 -> description ptr @+0x18 -> EnumItem.Index @desc+0x18.
+      auto prim = c.mem->ptr(chars[i] + 0x208);
+      if (prim) {
+        auto data = c.mem->ptr(*prim + 0x10);
+        if (data) {
+          auto desc = c.mem->ptr(*data + 0x18);
+          if (desc) { auto idx = c.mem->i32(*desc + 0x18); if (idx && *idx >= 0 && *idx <= 4) s.role = *idx; }
+        }
+      }
+    }
     out.push_back(s);
   }
   return out;
@@ -216,6 +242,34 @@ static std::vector<LootEnt> snapshot_loot(Ctx& c, const nzl::Vec3f& local) {
   }
   return out;
 }
+static std::vector<CarEnt> snapshot_cars(Ctx& c, const nzl::Vec3f& local) {
+  std::vector<CarEnt> out;
+  auto dict = c.mem->ptr(c.chain.world_entities + 0x60); // _cars (dump-verified)
+  if (!dict) return out;
+  auto objs = dict_values(c, *dict);
+  int n = (int)objs.size();
+  std::vector<uint64_t> trs(n, 0);
+  std::vector<nzl::Vec3f> pos(n, {});
+  for (int base = 0; base < n; base += 32) {
+    int m = (n - base) < 32 ? (n - base) : 32;
+    std::vector<NaItem> ti; std::vector<uint8_t> tb(m * 8, 0);
+    for (int i = 0; i < m; i++) ti.push_back(NaItem{objs[base + i] + 0xC0, (uint32_t)(i * 8), 8}); // CarModel.Transform
+    if (NaBatchRead(c.pid, ti.data(), (uint32_t)ti.size(), tb.data(), m * 8))
+      for (int i = 0; i < m; i++) std::memcpy(&trs[base + i], tb.data() + i * 8, 8);
+    std::vector<NaItem> pi; std::vector<uint8_t> pb(m * 12, 0);
+    for (int i = 0; i < m; i++) if (trs[base + i]) pi.push_back(NaItem{trs[base + i] + 0x38, (uint32_t)(i * 12), 12}); // _centerOfMassPosition
+    if (!pi.empty() && NaBatchRead(c.pid, pi.data(), (uint32_t)pi.size(), pb.data(), m * 12))
+      for (int i = 0; i < m; i++) { float f[3]; std::memcpy(f, pb.data() + i * 12, 12); pos[base + i] = {f[0], f[1], f[2]}; }
+  }
+  for (int i = 0; i < n; i++) {
+    nzl::Vec3f p = pos[i];
+    if ((p.x == 0 && p.y == 0 && p.z == 0) || !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
+    float dx = p.x - local.x, dy = p.y - local.y, dz = p.z - local.z;
+    CarEnt e; e.pos = p; e.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    out.push_back(e);
+  }
+  return out;
+}
 static HWND g_game_wnd = nullptr;
 static BOOL CALLBACK enum_wnd(HWND h, LPARAM lp) {
   DWORD wpid = 0; GetWindowThreadProcessId(h, &wpid);
@@ -229,10 +283,11 @@ static BOOL CALLBACK enum_wnd(HWND h, LPARAM lp) {
 static Ctx* g_ctx = nullptr;
 static const char* kMenuNames[] = {
   "FOV", "Max distance", "Show dead", "Boxes", "Skeleton", "Labels",
-  "HP bar*", "Armor mark*", "Loot ESP", "Radar", "Radar range",
-  "Aim (hold RMB)", "Aim FOV px", "Aim smooth", "Basis: LookAt quat"
+  "HP bar*", "Armor mark*", "Roles*", "Loot ESP", "Cars ESP", "Radar",
+  "Radar range", "Tracers", "Aim", "Aim key", "Aim bone", "Aim FOV px",
+  "Aim smooth", "Basis: LookAt quat", "Visible only*", "Menu key"
 };
-static constexpr int kMenuCount = 15;
+static constexpr int kMenuCount = 22;
 static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_PAINT) {
     PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
@@ -250,7 +305,16 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         float hgt = std::fabs(e.fy - e.hy); if (hgt < 2) continue;
         float wid = hgt * 0.45f;
         COLORREF col = e.dead ? RGB(120, 120, 120) : RGB(216, 160, 255);
+        if (g_ctx->show_roles && !e.dead && e.role >= 0 && e.role <= 4) {
+          const COLORREF rc[] = {RGB(200, 200, 200), RGB(255, 80, 80), RGB(90, 170, 255), RGB(120, 255, 140), RGB(255, 180, 80)};
+          col = rc[e.role];
+        }
         SetTextColor(dc, col);
+        if (g_ctx->tracers) {
+          SelectObject(dc, thin);
+          MoveToEx(dc, g_ctx->width / 2, g_ctx->height, nullptr);
+          LineTo(dc, (int)e.fx, (int)e.fy);
+        }
         if (g_ctx->show_boxes && !g_ctx->show_skeleton) {
           SelectObject(dc, pen);
           HGDIOBJ oldb = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
@@ -265,14 +329,16 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
           float neck = top + hgt * 0.16f, chest = top + hgt * 0.38f, pelvis = top + hgt * 0.58f, knee = top + hgt * 0.79f;
           MoveToEx(dc, (int)cx, (int)neck, nullptr); LineTo(dc, (int)cx, (int)pelvis);
           MoveToEx(dc, (int)(cx - wid * 0.55f), (int)(chest + hgt * 0.10f), nullptr); LineTo(dc, (int)cx, (int)chest); LineTo(dc, (int)(cx + wid * 0.55f), (int)(chest + hgt * 0.10f));
-          MoveToEx(dc, (int)cx, (int)pelvis); LineTo(dc, (int)(cx - wid * 0.30f), (int)knee); LineTo(dc, (int)(cx - wid * 0.32f), (int)bot);
-          MoveToEx(dc, (int)cx, (int)pelvis); LineTo(dc, (int)(cx + wid * 0.30f), (int)knee); LineTo(dc, (int)(cx + wid * 0.32f), (int)bot);
+          MoveToEx(dc, (int)cx, (int)pelvis, nullptr); LineTo(dc, (int)(cx - wid * 0.30f), (int)knee); LineTo(dc, (int)(cx - wid * 0.32f), (int)bot);
+          MoveToEx(dc, (int)cx, (int)pelvis, nullptr); LineTo(dc, (int)(cx + wid * 0.30f), (int)knee); LineTo(dc, (int)(cx + wid * 0.32f), (int)bot);
           Ellipse(dc, (int)(cx - wid * 0.16f), (int)top, (int)(cx + wid * 0.16f), (int)neck);
         }
         int ty = (int)e.hy - 15;
         if (g_ctx->show_text) {
-          char t[96];
-          std::snprintf(t, sizeof(t), "#%d %.0fm%s", e.id, e.dist, e.armor && g_ctx->show_armor ? " [ARM]" : "");
+          char t[128];
+          const char* rn = (g_ctx->show_roles && e.role >= 0 && e.role <= 4) ? kRoleNames[e.role] : "";
+          std::snprintf(t, sizeof(t), "#%d %.0fm%s%s%s", e.id, e.dist,
+                        rn[0] ? " " : "", rn, e.armor && g_ctx->show_armor ? " [ARM]" : "");
           TextOutA(dc, (int)(e.hx - wid * 0.5f), ty, t, (int)std::strlen(t));
           ty -= 13;
         }
@@ -284,6 +350,16 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
           HBRUSH fg = CreateSolidBrush(frac > 0.5f ? RGB(80, 255, 120) : frac > 0.25f ? RGB(255, 200, 60) : RGB(255, 70, 70));
           RECT fr = br; fr.right = br.left + (int)((br.right - br.left) * frac);
           FillRect(dc, &fr, fg); DeleteObject(fg);
+        }
+      }
+      if (g_ctx->show_cars) {
+        SelectObject(dc, thin);
+        SetTextColor(dc, RGB(255, 170, 60));
+        for (auto& l : g_ctx->cars) {
+          if (!l.on) continue;
+          Rectangle(dc, (int)l.sx - 6, (int)l.sy - 4, (int)l.sx + 6, (int)l.sy + 4);
+          char t[64]; std::snprintf(t, sizeof(t), "car %.0fm", l.dist);
+          TextOutA(dc, (int)l.sx + 8, (int)l.sy - 7, t, (int)std::strlen(t));
         }
       }
       if (g_ctx->show_loot) {
@@ -341,13 +417,20 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         std::snprintf(vals[5], 64, "%s", g_ctx->show_text ? "ON" : "OFF");
         std::snprintf(vals[6], 64, "%s", g_ctx->show_hp ? "ON" : "OFF");
         std::snprintf(vals[7], 64, "%s", g_ctx->show_armor ? "ON" : "OFF");
-        std::snprintf(vals[8], 64, "%s", g_ctx->show_loot ? "ON" : "OFF");
-        std::snprintf(vals[9], 64, "%s", g_ctx->show_radar ? "ON" : "OFF");
-        std::snprintf(vals[10], 64, "%.0f m", g_ctx->radar_range);
-        std::snprintf(vals[11], 64, "%s", g_ctx->aim ? "ON" : "OFF");
-        std::snprintf(vals[12], 64, "%.0f px", g_ctx->aim_fov);
-        std::snprintf(vals[13], 64, "%.0f", g_ctx->aim_smooth);
-        std::snprintf(vals[14], 64, "%s", g_ctx->basis_quat ? "ON" : "OFF");
+        std::snprintf(vals[8], 64, "%s", g_ctx->show_roles ? "ON" : "OFF");
+        std::snprintf(vals[9], 64, "%s", g_ctx->show_loot ? "ON" : "OFF");
+        std::snprintf(vals[10], 64, "%s", g_ctx->show_cars ? "ON" : "OFF");
+        std::snprintf(vals[11], 64, "%s", g_ctx->show_radar ? "ON" : "OFF");
+        std::snprintf(vals[12], 64, "%.0f m", g_ctx->radar_range);
+        std::snprintf(vals[13], 64, "%s", g_ctx->tracers ? "ON" : "OFF");
+        std::snprintf(vals[14], 64, "%s", g_ctx->aim ? "ON" : "OFF");
+        std::snprintf(vals[15], 64, "%s", kAimKeyNames[g_ctx->aim_key]);
+        std::snprintf(vals[16], 64, "%s", kBoneNames[g_ctx->aim_bone]);
+        std::snprintf(vals[17], 64, "%.0f px", g_ctx->aim_fov);
+        std::snprintf(vals[18], 64, "%.0f", g_ctx->aim_smooth);
+        std::snprintf(vals[19], 64, "%s", g_ctx->basis_quat ? "ON" : "OFF");
+        std::snprintf(vals[20], 64, "%s", g_ctx->visible_only ? "ON" : "OFF");
+        std::snprintf(vals[21], 64, "%s", kMenuKeyNames[g_ctx->menu_key]);
         HBRUSH panel = CreateSolidBrush(RGB(24, 0, 36));
         RECT pr{10, 10, 330, 10 + 22 * (kMenuCount + 1) + 10};
         FillRect(dc, &pr, panel); DeleteObject(panel);
@@ -446,7 +529,7 @@ int main() {
       TranslateMessage(&msg); DispatchMessageW(&msg);
     }
     if (GetAsyncKeyState(VK_END) & 1) break;
-    if (GetAsyncKeyState(VK_INSERT) & 1) { ctx.menu = !ctx.menu; InvalidateRect(ov, nullptr, FALSE); }
+    if (GetAsyncKeyState(kMenuKeys[ctx.menu_key]) & 1) { ctx.menu = !ctx.menu; InvalidateRect(ov, nullptr, FALSE); }
     if (ctx.menu) {
       if (GetAsyncKeyState(VK_UP) & 1) ctx.menu_sel = (ctx.menu_sel + kMenuCount - 1) % kMenuCount;
       if (GetAsyncKeyState(VK_DOWN) & 1) ctx.menu_sel = (ctx.menu_sel + 1) % kMenuCount;
@@ -464,13 +547,20 @@ int main() {
           case 5: ctx.show_text = !ctx.show_text; break;
           case 6: ctx.show_hp = !ctx.show_hp; break;
           case 7: ctx.show_armor = !ctx.show_armor; break;
-          case 8: ctx.show_loot = !ctx.show_loot; break;
-          case 9: ctx.show_radar = !ctx.show_radar; break;
-          case 10: adj(ctx.radar_range, 10, 30, 500); break;
-          case 11: ctx.aim = !ctx.aim; break;
-          case 12: adj(ctx.aim_fov, 10, 30, 600); break;
-          case 13: adj(ctx.aim_smooth, 1, 1, 20); break;
-          case 14: ctx.basis_quat = !ctx.basis_quat; break;
+          case 8: ctx.show_roles = !ctx.show_roles; break;
+          case 9: ctx.show_loot = !ctx.show_loot; break;
+          case 10: ctx.show_cars = !ctx.show_cars; break;
+          case 11: ctx.show_radar = !ctx.show_radar; break;
+          case 12: adj(ctx.radar_range, 10, 30, 500); break;
+          case 13: ctx.tracers = !ctx.tracers; break;
+          case 14: ctx.aim = !ctx.aim; break;
+          case 15: ctx.aim_key = (ctx.aim_key + (right ? 1 : 3)) % 4; break;
+          case 16: ctx.aim_bone = (ctx.aim_bone + (right ? 1 : 2)) % 3; break;
+          case 17: adj(ctx.aim_fov, 10, 30, 600); break;
+          case 18: adj(ctx.aim_smooth, 1, 1, 20); break;
+          case 19: ctx.basis_quat = !ctx.basis_quat; break;
+          case 20: ctx.visible_only = !ctx.visible_only; break;
+          case 21: ctx.menu_key = (ctx.menu_key + (right ? 1 : 3)) % 4; break;
         }
         InvalidateRect(ov, nullptr, FALSE);
       }
@@ -500,37 +590,45 @@ int main() {
       view.pos = cpos; view.fwd = cfwd; view.right = cright; view.up = cup;
       view.width = ctx.width; view.height = ctx.height; view.fov_deg = ctx.fov;
       ctx.render.clear();
+      const float kBoneH[] = {1.75f, 1.30f, 0.95f};
       for (auto& p : players) {
         if (p.dead && !ctx.show_dead) continue;
         if (p.dist > ctx.max_dist) continue;
-        float fx, fy, fd, hx, hy, hd;
+        float fx, fy, fd, hx, hy, hd, ax, ay, ad;
         nzl::Vec3f head{p.pos.x, p.pos.y + 1.8f, p.pos.z};
+        nzl::Vec3f bone{p.pos.x, p.pos.y + kBoneH[ctx.aim_bone], p.pos.z};
         if (!nzl::world_to_screen(view, p.pos, fx, fy, fd)) continue;
         if (!nzl::world_to_screen(view, head, hx, hy, hd)) continue;
-        RenderEnt e; e.hx = hx; e.hy = hy; e.fx = fx; e.fy = fy;
+        if (!nzl::world_to_screen(view, bone, ax, ay, ad)) continue;
+        if (ctx.visible_only && (hx < 0 || hx > ctx.width || hy < 0 || hy > ctx.height)) continue;
+        RenderEnt e; e.hx = hx; e.hy = hy; e.fx = fx; e.fy = fy; e.ax = ax; e.ay = ay;
         e.pos = p.pos; e.id = p.id; e.dist = p.dist; e.dead = p.dead;
-        e.hp = p.hp; e.maxhp = p.maxhp; e.armor = p.armor;
+        e.hp = p.hp; e.maxhp = p.maxhp; e.armor = p.armor; e.role = p.role;
         ctx.render.push_back(e);
       }
+      if (ctx.show_cars) {
+        ctx.cars = snapshot_cars(ctx, cpos);
+        for (auto& l : ctx.cars) { float dep = 0; l.on = l.dist <= ctx.max_dist && nzl::world_to_screen(view, l.pos, l.sx, l.sy, dep); }
+      } else ctx.cars.clear();
       if (ctx.show_loot) {
         ctx.loot = snapshot_loot(ctx, cpos);
         for (auto& l : ctx.loot) { float dep = 0; l.on = l.dist <= ctx.max_dist && nzl::world_to_screen(view, l.pos, l.sx, l.sy, dep); }
       } else ctx.loot.clear();
       // Aim: hold RMB, move mouse toward nearest alive head to centre.
-      if (ctx.aim && (GetAsyncKeyState(VK_RBUTTON) & 0x8000)) {
+      if (ctx.aim && (GetAsyncKeyState(kAimKeys[ctx.aim_key]) & 0x8000)) {
         float best = ctx.aim_fov; const RenderEnt* target = nullptr;
         float cxp = ctx.width * 0.5f, cyp = ctx.height * 0.5f;
         for (auto& e : ctx.render) {
           if (e.dead) continue;
-          float dx = e.hx - cxp, dy = e.hy - cyp;
+          float dx = e.ax - cxp, dy = e.ay - cyp;
           float d = std::sqrt(dx * dx + dy * dy);
           if (d < best) { best = d; target = &e; }
         }
         if (target) {
           INPUT in{}; in.type = INPUT_MOUSE;
           in.mi.dwFlags = MOUSEEVENTF_MOVE;
-          in.mi.dx = (LONG)((target->hx - cxp) / ctx.aim_smooth);
-          in.mi.dy = (LONG)((target->hy - cyp) / ctx.aim_smooth);
+          in.mi.dx = (LONG)((target->ax - cxp) / ctx.aim_smooth);
+          in.mi.dy = (LONG)((target->ay - cyp) / ctx.aim_smooth);
           if (in.mi.dx || in.mi.dy) SendInput(1, &in, sizeof(INPUT));
         }
       }

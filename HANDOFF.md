@@ -480,3 +480,20 @@
 - Aim/Radar implemented in overlay (radar rotates by camera yaw).
 - Next: owner BuildAll (no driver reload), INSERT in game, test each
   toggle, report HP/armor/loot correctness + FOV/basis behaviour.
+
+## Build fix + roles/cars/tracers/binds + portable package (2026-11-27)
+- Owner build error C2660 MoveToEx 3-arg at overlay lines 268-269
+  (legs) - added nullptr 4th arg.
+- Roles: char+0x208 primitive -> desc Index @+0x18, mapping
+  Settler0/Robber1/Cop2/Citizen3/Prisoner4 (PlayerRole enum from dump;
+  Index==enum order UNVERIFIED). Coloured labels per role.
+- Cars ESP: WorldEntities._cars +0x60, CarModel.Transform +0xC0,
+  VehicleTransformModel._centerOfMassPosition +0x38 (dump fields).
+- Tracers = snaplines bottom-centre->feet. Aim bone Head/Chest/Pelvis
+  heights, aim key RMB/LMB/ALT/SHIFT, menu key INSERT/DELETE/HOME/F9.
+- Visible only* = strict on-screen filter (frustum) - true occlusion
+  raycast NOT implemented, do not claim otherwise.
+- Portable: NZL-START.bat (self-elevate, kdmapper prep, load driver,
+  prompt game, overlay) + tools/NZL-Package.ps1 -> NZL-Studio-Package
+  .zip with exes/driver.sys/kdmapper.exe/tools/NZL-START.bat, no
+  VS/WDK needed on recipient PC.

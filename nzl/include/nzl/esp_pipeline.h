@@ -14,6 +14,7 @@ struct PlayerSnap {
   int32_t hp = -1;    // -1 = unknown (HP chain marked unverified until live check)
   int32_t maxhp = 0;
   bool armor = false; // HasArmor primitive (unverified layout, live check)
+  int32_t role = -2;  // Settler0 Robber1 Cop2 Citizen3 Prisoner4 via description Index (unverified)
 };
 struct DrawCmd {
   enum Kind { Line, Rect, Text } kind = Line;
