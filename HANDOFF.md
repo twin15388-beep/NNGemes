@@ -221,3 +221,9 @@
 - NZL-LoadDriver: предохранитель — без CrashDumpEnabled=2 загрузка запрещена (exit 9). Сначала NZL-SetKernelDump + Restart-Computer.
 - Драйвер = откаченный состав (без NA_CMD_MODULE), поиск модулей — клиентский region-scan в probe.
 - Шаги: SetKernelDump -> reboot -> git pull -> BuildAll -> LoadDriver (один раз) -> игра/матч -> NZL-Probe (админ) -> nzl_probe.txt с region-scan базами.
+
+## Третья загрузка — чистая (2026-11-27, после перезагрузки)
+- CrashDumpEnabled=2 подтверждён владельцем. Defender exclusion сработал, kdmapper.exe на месте (151552).
+- Откаченный driver.sys (14848, без NA_CMD_MODULE) загружен: base 0xFFFF980BA098A000, DriverEntry 0x0, Key=0x633f31d6 (1665085910), Shm=F28BC231.
+- DbgSd/DbgAcl/DbgAce1/DbgAce2/DbgAce3/DbgDacl/DbgSection = все 0x0.
+- Ожидается: игра Steam -> матч -> NZL-Probe (админ) -> region-scan базы GameAssembly/UnityPlayer + TRANSPORT_OK.
