@@ -238,3 +238,10 @@
 - 0x998 лежит в первой странице образа (0x000-0xFFF) — kdmapper её не копирует ("Skipped 0x1000 bytes of PE Header"), страница нулевая: выполнение нулей = ADD [RAX],AL -> запись по дикому RAX. Управление попало в заголовок: возврат/переход по повреждённому адресу, не строка исходника.
 - Стек bugcheck-треда: KiPageFault -> 0xffff980b`a098a998, дальше мусор (stack addr, 0x10000, 0x2010bc60000, 0x30). MEMORY.DMP 1.4GB у владельца, minidump 112726-11078-01.dmp 5.3MB.
 - NZL-AnalyzeDump: второй проход .trap <TrapFrame> ; r ; kb ; dps @rsp — нужны регистры. Драйвер НЕ загружать.
+
+## BSOD #3 trap frame (analyze-4)
+- rip=ffff980ba098a998 (база kdmapper +0x998), инструкция из дампа: `mov qword ptr [rbx+34h], rax`, rax=0x10000, ds-адрес записи 0x2010bc60034 (rbx на момент фолта = 0x2010bc60000 — юзерный/дикий указатель вместо ядерного).
+- Стек системного треда драйвера: PspSystemThreadStartup+0x5a, адрес в образе +0x690. Тред — наш воркер/стартап.
+- kdmapper кладёт .text со сдвигом -0x1000 (header skipped), поэтому runtime +0x998 = PE RVA 0x1998 в driver.sys.
+- Нужно: dumpbin /disasm driver.sys у владельца, смотреть RVA 0x1998 — какая функция пишет [ptr+0x34]=0x10000 (кандидат: поле region в NA_SHM +0x34 или MBI-копия в NaRegion).
+- Драйвер НЕ загружать.
