@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
     logf("[probe] registry Key=%lu Shm=%ls\n", kv, shm);
     if (!kv || !shm[0]) { logf("[probe] registry values empty -> driver startup incomplete. Reload driver.\n"); if (g_log) std::fclose(g_log); return 4; }
     WCHAR full[32]; swprintf_s(full, L"Global\\%s", shm);
-    HANDLE hm = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, full);
+    HANDLE hm = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, full);
     if (!hm) {
       DWORD e = GetLastError();
       logf("[probe] OpenFileMapping(%ls) FAILED win32=%lu. %s\n", full, e,

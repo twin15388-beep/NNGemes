@@ -49,11 +49,11 @@ bool NaInit()
     WCHAR fullName[32];
     swprintf_s(fullName, L"Global\\%s", shmSuffix);
 
-    g_map = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, fullName);
+    g_map = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, fullName);
     if (!g_map)
         return false;
 
-    g_shm = (NaShm*)MapViewOfFile(g_map, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(NaShm));
+    g_shm = (NaShm*)MapViewOfFile(g_map, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(NaShm));
     if (!g_shm) {
         CloseHandle(g_map);
         g_map = nullptr;
