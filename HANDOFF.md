@@ -232,3 +232,9 @@
 - Владелец: "опять вылетел" (стадия не уточнена). Драйвер больше НЕ загружать.
 - CrashDumpEnabled=2 был подтверждён до загрузки -> должен существовать C:\Windows\MEMORY.DMP с полным стеком.
 - Нужно: NZL-CrashInfo.ps1 + NZL-AnalyzeDump.ps1 (берёт MEMORY.DMP) -> crash_info\analyze.txt + crash_info.txt + на каком шаге упало (загрузка/игра/probe).
+
+## BSOD #3 анализ (kernel MEMORY.DMP, analyze-3)
+- Bugcheck 0x1e c0000005 write 0x2010bc60034. Arg2 ffff980ba098a998 = база загрузки драйвера из kdmapper-лога (0xFFFF980BA098A000) + 0x998.
+- 0x998 лежит в первой странице образа (0x000-0xFFF) — kdmapper её не копирует ("Skipped 0x1000 bytes of PE Header"), страница нулевая: выполнение нулей = ADD [RAX],AL -> запись по дикому RAX. Управление попало в заголовок: возврат/переход по повреждённому адресу, не строка исходника.
+- Стек bugcheck-треда: KiPageFault -> 0xffff980b`a098a998, дальше мусор (stack addr, 0x10000, 0x2010bc60000, 0x30). MEMORY.DMP 1.4GB у владельца, minidump 112726-11078-01.dmp 5.3MB.
+- NZL-AnalyzeDump: второй проход .trap <TrapFrame> ; r ; kb ; dps @rsp — нужны регистры. Драйвер НЕ загружать.

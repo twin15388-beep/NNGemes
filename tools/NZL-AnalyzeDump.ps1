@@ -51,4 +51,14 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $out = Join-Path $outDir "analyze.txt"
 Write-Nzl "Анализирую (нужен интернет для символов Microsoft)..."
 & $cdb -z $Dump -c "!analyze -v; .ecxr; kv; lm n; q" 2>&1 | Tee-Object -FilePath $out
+# Second pass: decode the trap frame (registers + raw stack) - the first
+# crash had a zeroed stack, the address base+0x998 needs register context.
+$txt = Get-Content $out -Raw -ErrorAction SilentlyContinue
+if ($txt -match "TrapFrame @ ([0-9a-fA-F``]+)") {
+    $trap = $Matches[1]
+    Write-Nzl "Trap frame: $trap - второй проход (регистры и стек)..."
+    "" | Add-Content $out
+    "===== TRAP FRAME $trap =====" | Add-Content $out
+    & $cdb -z $Dump -c ".trap $trap; r; kb; dps @rsp L60; q" 2>&1 | Add-Content $out
+}
 Write-Nzl "Готово. Пришли мне файл: $out"
