@@ -13,7 +13,13 @@ struct ChainResult {
 // or GOM object. We do NOT hardcode old static RVA (conflict C1).
 // offsets below mirror cpp/include/robrun/config.h VERIFIED fields.
 struct Offsets {
-  uint32_t unity_entry_game=0x28, game_model=0xD0, game_battle=0x10, battle_entities=0x90;
+  // Game.GameModel moved between Steam builds of the same Unity version:
+  // 0xD0 in builds <=26726105 (17 Nov), 0xD8 in >=26807668 (20 Nov) -
+  // cross-checked in the public per-build IL2CPP SDK dumps of this game.
+  // resolve_chain tries the primary then the alt and keeps whichever
+  // yields a fully sane chain (dict + camera), so a stale value cannot
+  // silently win. Build match is still UNVERIFIED until live chain check.
+  uint32_t unity_entry_game=0x28, game_model=0xD8, game_model_alt=0xD0, game_battle=0x10, battle_entities=0x90;
   uint32_t battle_world=0x60, battle_camera=0x358, wem_battle_chars=0x18;
   uint32_t dict_entries=0x18, dict_count=0x20, dict_stride=0x18;
   uint32_t char_id=0x38, char_transform=0x58, char_is_dead=0xF0;

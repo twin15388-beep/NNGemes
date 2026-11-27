@@ -6,16 +6,26 @@ std::optional<uint64_t> follow(const IMemory& m, uint64_t base, uint32_t off, co
   if(!plausible_ptr(base)){ r.stage=stage; return std::nullopt; }
   auto v=m.ptr(base+off); if(!v || !plausible_ptr(*v)){ r.stage=stage; return std::nullopt; } return v;
 }
-ChainResult resolve_chain(const IMemory& m, uint64_t ue, const Offsets& o){
-  ChainResult r; r.unity_entry=ue;
-  auto game=follow(m,ue,o.unity_entry_game,"UnityEntry._game",r); if(!game) return r; r.game=*game;
-  auto gm=follow(m,*game,o.game_model,"Game.GameModel(+0xD0, C2 check +0xD8)",r); if(!gm) return r; r.game_model=*gm;
+static ChainResult resolve_from_game(const IMemory& m, uint64_t ue, uint64_t game, uint32_t gm_off, const Offsets& o){
+  ChainResult r; r.unity_entry=ue; r.game=game;
+  auto gm=follow(m,game,gm_off,"Game.GameModel",r); if(!gm) return r; r.game_model=*gm;
   auto bm=follow(m,*gm,o.game_battle,"GameModel._battleModel",r); if(!bm) return r; r.battle_model=*bm;
   auto be=follow(m,*bm,o.battle_entities,"BattleModel.BattleEntitiesModel",r); if(!be) return r; r.battle_entities=*be;
   auto we=follow(m,*be,o.battle_world,"BattleEntitiesModel._worldEntitiesModel",r); if(!we) return r; r.world_entities=*we;
   auto d=follow(m,*we,o.wem_battle_chars,"WorldEntitiesModel._battleCharacters",r); if(!d) return r; r.dict=*d;
   auto cam=follow(m,*bm,o.battle_camera,"BattleModel.BattleCameraModel",r); if(!cam) return r; r.camera_model=*cam;
   r.ok=true; r.stage="ok"; return r;
+}
+ChainResult resolve_chain(const IMemory& m, uint64_t ue, const Offsets& o){
+  ChainResult r; r.unity_entry=ue;
+  auto game=follow(m,ue,o.unity_entry_game,"UnityEntry._game",r); if(!game) return r;
+  ChainResult a=resolve_from_game(m,ue,*game,o.game_model,o);
+  if(a.ok) return a;
+  if(o.game_model_alt && o.game_model_alt!=o.game_model){
+    ChainResult b=resolve_from_game(m,ue,*game,o.game_model_alt,o);
+    if(b.ok) return b;
+  }
+  return a;
 }
 std::optional<DictHeader> read_dict(const IMemory& m, uint64_t dict, const Offsets& o){
   if(!plausible_ptr(dict)) return std::nullopt; DictHeader h;

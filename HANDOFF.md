@@ -322,3 +322,23 @@
   (framework Il2CppDumper-win asset). Sandbox cannot fetch the release
   zip (redirect host blocked) - .exe.config marker is the standard
   net472 layout; worst case GetDumper re-downloads each run, Dump works.
+
+## Metadata v39: Perfare dead, per-build SDK found (2026-11-27)
+- dumper.log: "Metadata file supplied is not a supported version[39]" -
+  Perfare Il2CppDumper cannot parse Unity 6000.3 metadata v39. Stop
+  retrying Perfare on this build.
+- Found public SDK of THIS game: github.com/InsideExploit/rob-run-sdk
+  (Unity 6000.3.18f1, one folder per Steam build, latest 26866884 =
+  23 Nov 2026). NOT vendored into repo (97MB/folder) - reference only.
+- Cross-check vs SDK 26866884 dump.cs: UnityEntry._game 0x28 OK,
+  GameModel._battleModel 0x10 OK, BattleModel.BattleEntitiesModel 0x90
+  OK, BattleCameraModel 0x358 OK, WorldEntities._battleCharacters 0x18
+  OK, camera Position 0x10/Forward 0x3C/Right 0x48/Up 0x54 OK.
+- DISCREPANCY: Game.GameModel = 0xD8 in builds >=26807668, was 0xD0 in
+  <=26726105. Our Offsets had stale 0xD0. chain now tries 0xD8 then
+  0xD0 and keeps the chain that fully resolves (game_model_alt).
+- Owner buildid UNKNOWN: need Steam buildid from appmanifest to know
+  if owner == 26866884. Root (UnityEntry instance) STILL unresolved:
+  no static Game/UnityEntry field exists in dump - root strategy is
+  the next design step (class-pointer instance scan or GOM), must be
+  validated live by class-name/chain sanity, never assumed.
