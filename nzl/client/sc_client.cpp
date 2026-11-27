@@ -7,6 +7,7 @@
 static HANDLE  g_map = nullptr;
 static NaShm*  g_shm = nullptr;
 static UINT32  g_key = 0;
+static bool g_timer_period = false;
 
 static NaShm* Send(UINT32 cmd)
 {
@@ -32,11 +33,13 @@ bool NaInit()
     // (region scan ~80s, heap scan ~370s). Raising the system timer
     // resolution to 1ms from the client shrinks that wake latency an
     // order of magnitude without touching the driver.
-    timeBeginPeriod(1);
+    if (!g_timer_period) g_timer_period = (timeBeginPeriod(1) == TIMERR_NOERROR);
     HKEY hk;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\NaCoreFilter",
-                      0, KEY_READ, &hk) != ERROR_SUCCESS)
+                      0, KEY_READ, &hk) != ERROR_SUCCESS) {
+        NaClose();
         return false;
+    }
 
     DWORD type, sz;
 
@@ -50,20 +53,23 @@ bool NaInit()
 
     RegCloseKey(hk);
 
-    if (!keyVal || !shmSuffix[0])
+    if (!keyVal || !shmSuffix[0]) {
+        NaClose();
         return false;
+    }
 
     WCHAR fullName[32];
     swprintf_s(fullName, L"Global\\%s", shmSuffix);
 
     g_map = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, fullName);
-    if (!g_map)
+    if (!g_map) {
+        NaClose();
         return false;
+    }
 
     g_shm = (NaShm*)MapViewOfFile(g_map, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(NaShm));
     if (!g_shm) {
-        CloseHandle(g_map);
-        g_map = nullptr;
+        NaClose();
         return false;
     }
 
@@ -76,6 +82,7 @@ void NaClose()
     if (g_shm) { UnmapViewOfFile(g_shm); g_shm = nullptr; }
     if (g_map) { CloseHandle(g_map);     g_map = nullptr; }
     g_key = 0;
+    if (g_timer_period) { timeEndPeriod(1); g_timer_period = false; }
 }
 
 bool NaRead(UINT32 pid, UINT64 addr, UINT32 size, void* out)

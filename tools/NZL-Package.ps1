@@ -80,15 +80,11 @@ if errorlevel 1 (
     timeout /t 2 /nobreak >nul
     goto waitgame_loop
 )
-echo [NZL] Game process detected; waiting 10 seconds for startup...
-timeout /t 10 /nobreak >nul
-tasklist /FI "IMAGENAME eq ROB RUN.exe" /NH | find /I "ROB RUN.exe" >nul
-if errorlevel 1 goto waitgame_loop
-echo [NZL] Starting overlay automatically (INSERT = menu, END = exit)...
+echo [NZL] Game process detected. Starting persistent app (menu opens immediately)...
 "%NZLDIR%\nzl_overlay.exe"
 if errorlevel 1 (
     echo [NZL] Overlay exited with errorlevel %errorlevel%.
-    echo [NZL] If you were not yet in a match, enter one and run this file again.
+    echo [NZL] The menu remains in this app; send the full console output for diagnosis.
     pause
 )
 goto :eof

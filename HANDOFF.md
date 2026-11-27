@@ -523,3 +523,24 @@
   cancels while waiting. Driver load remains before game; if game was
   already running without a loaded driver, launcher still blocks and
   asks to close/restart (avoids loading the driver late).
+
+## Persistent UI / background match attach / clickable menu (2026-11-27)
+- Reworked `nzl/src/overlay_windows.cpp`: UI starts independently from
+  memory discovery; menu is always available while the app runs. ESP worker
+  retries process, GameAssembly, TypeInfo slots, active Game root and chain;
+  it reconnects after menu/loading screens, match changes, or PID changes.
+  No manual overlay restart for the BattleModel-not-ready startup case.
+- Separate draggable 800x560 GDI menu window with Aim/Visuals/Loot/Radar/
+  Misc tabs; clickable toggles, sliders and cycling controls; settings persist.
+  Insert opens it, releases ClipCursor and activates menu; clicking menu
+  doesn't target the game. Closing restores game focus. END exits.
+- ESP render window remains click-through. Menu displays attach status;
+  overlay shows waiting/active status and raw/projected player counts.
+- Batching HP/armor/role chains reduces per-player serial driver requests;
+  all scanning/snapshot reads moved off UI thread. `NaInit` now balances
+  timeBeginPeriod/timeEndPeriod across retries.
+- Validation in sandbox: tree-sitter C++ parse clean; x86_64-windows-gnu
+  object compile passed for overlay/client/driver-memory sources; core
+  chain/pipeline tests pass. Full Win32/MSVC+WDK build and live ESP behavior
+  still require owner to run tools/NZL-BuildAll.ps1 on Windows; offsets/HP/role
+  remain dump-derived.
