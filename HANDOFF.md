@@ -506,3 +506,11 @@
   source kit (repo snapshot with NZL-START.bat + tools) to Dropbox
   for download. Feature set now standard (except instant loot pickup,
   explicitly excluded by owner).
+
+## One-file package (2026-11-27)
+- tools/NZL-Package.ps1 rewritten: output is a single NZL-Studio.bat
+  with driver.sys/kdmapper.exe/nzl_overlay.exe base64-embedded.
+  Recipient double-clicks: self-elevate, extract to
+  %LOCALAPPDATA%\NZL-Studio (settings persist), kdmapper load
+  (skipped if HKLM\SYSTEM\NaCoreFilter present; refuses if game
+  already running), prompt game, overlay. No zip/folders/VS needed.
