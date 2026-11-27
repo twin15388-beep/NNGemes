@@ -146,3 +146,7 @@
 - Реестр HKLM\SYSTEM\NaCoreFilter: Key=1388125119, Shm=C309E858 -> TRANSPORT_LOADED.
 - Драйвер выгрузке не подлежит (DriverUnload не задан) — до конца сессии Windows он в ядре.
 - След: игра через Steam, матч, nzl_probe.exe -> nzl_probe.txt (TRANSPORT_OK/FAIL чтения GameAssembly под EAC).
+
+## Probe #2 (2026-11-27)
+- pid=5512, registry Key=1388125119 Shm=C309E858 (совпадает с загрузкой), OpenFileMapping(Global\C309E858) FAILED win32=5 ACCESS DENIED.
+- Вывод: probe был без админа. Секция ядра требует администратора — probe и будущий overlay запускать только от администратора.
