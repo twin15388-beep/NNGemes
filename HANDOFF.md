@@ -164,3 +164,8 @@
 - Скриншот: BSOD поверх игры, "Код остановки" похож на KMODE_EXCEPTION_NOT_HANDLED. ПК крашнулся предположительно с DACL-версией драйвера (ручные SID) либо при её загрузке/работе.
 - ЗАПРЕТ: driver.sys НЕ загружать до анализа minidump. После перезагрузки kdmapper-драйвер отсутствует (ручной мап), игра должна работать штатно.
 - `tools/NZL-CrashInfo.ps1`: собирает BugCheck 1001/Kernel-Power 41 + копирует последний C:\Windows\Minidump\*.dmp в crash_info/. Жду crash_info.txt + .dmp.
+
+## BugCheck подтверждён (crash_info.txt владельца)
+- 2026-11-27 18:03:47: bugcheck 0x0000001e KMODE_EXCEPTION_NOT_HANDLED (c0000005 ACCESS_VIOLATION, fault ffffe10d94df2f54 — диапазон ручного мапа kdmapper, наш драйвер), Kernel-Power 41.
+- Minidump: C:\Windows\Minidump\112726-11109-01.dmp (196096) -> crash_info\112726-11109-01.dmp у владельца. В Dropbox закинут, но Dropbox в этом чате ВЫКЛЮЧЕН — забрать не могу, жду включения приложения или прямой загрузки .dmp сюда.
+- Драйвер НЕ загружать до анализа дампа (!analyze -v / разбор модулей и стека).
