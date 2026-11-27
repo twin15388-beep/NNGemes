@@ -186,3 +186,9 @@
 - `tools/NZL-SetKernelDump.ps1`: CrashDumpEnabled=2 (kernel MEMORY.DMP) — triage прошлого раза дал ZEROED_STACK. Нужна перезагрузка после.
 - NZL-LoadDriver: защита от двойного мапа (если HKLM\SYSTEM\NaCoreFilter с Key уже есть в сессии — отказ exit 8). Прошлый раз драйвер грузился многократно поверх — кандидат на краш.
 - План теста: SetKernelDump -> reboot -> LoadDriver (игра выкл., один раз) -> reg Dbg*=0 -> probe на explorer.exe (pid аргументом, без игры) -> только потом игра+probe.
+
+## Харднённый драйвер загружен (2026-11-27, повторный тест)
+- kdmapper success, image base 0xFFFF808F0A813000, DriverEntry 0x0. Реестр: Key=0xc926e0de (3374768350), Shm=58921339.
+- DbgSd/DbgAcl/DbgAce1/DbgAce2/DbgAce3/DbgDacl/DbgSection = ВСЕ 0x0 — self-relative SD и ACE применены, секция создана успешно.
+- Explorer-тест не выполнен: владелец вставил буквальный текст PID_ПРОВОДНИКА вместо цифры 9492.
+- След: игра Steam -> матч -> NZL-Probe.ps1 от админа. Критерий: section open OK (DACL исправлен?) + GameAssembly MZ/PE OK + TRANSPORT_OK.
