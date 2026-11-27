@@ -20,3 +20,4 @@ int main(){
   auto bad=nzl::resolve_chain(m,0xdead,o); C(!bad.ok);
   if(fails){ std::printf("%d FAILED\n",fails); return 1; } std::printf("ALL NZL TESTS PASSED\n"); return 0;
 }
+// pipeline checks appended via separate main below are in test_pipeline.cpp

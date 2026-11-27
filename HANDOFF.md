@@ -119,3 +119,8 @@
 - Сделан `nzl/src/probe_windows.cpp` -> `nzl_probe.exe` (Windows): НЕ требует офсетов дампа. Проверяет: pid, NaInit (HKLM\SYSTEM\NaCoreFilter), NaGetBase/PEB, чтение MZ/PE через драйвер (exe + GameAssembly.dll), NaQueryRegion, снимок модулей. Пишет nzl_probe.txt, код 0 = TRANSPORT_OK.
 - `tools/NZL-BuildAll.ps1` — сборка всего одной командой: драйвер (build_driver.bat) + nzl_probe/nzl_studio (cmake).
 - Linux-проверка: cmake configure/build 0, nzl_tests PASSED. Windows exe здесь не собирался.
+
+## ESP-конвейер (2026-11-27)
+- `nzl/include/nzl/esp_pipeline.h` + `src/esp_pipeline.cpp`: snapshot_players (dict -> id/dead/pos/dist, сортировка), world_to_screen (та же математика что cpp/), build_draw_list (фиолетовый Rect 1.8m + Text #id dist, отсев dead/behind/max_dist).
+- `nzl/tests/test_pipeline.cpp`: 8/8 OK на FakeMemory. cmake build 0.
+- Статус ESP честно: конвейер готов и протестирован изолированно. В игре ESP НЕТ: нет (1) офсетов нового билда (жду nzl_dump.zip), (2) корня (static/TypeInfo из дампа + живое подтверждение), (3) D3D11-окна отрисовки DrawCmd на Windows (не собиралось здесь).
