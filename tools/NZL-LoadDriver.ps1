@@ -55,6 +55,16 @@ if ($Kdmapper -eq "" -or -not (Test-Path $Kdmapper)) {
 }
 Write-Nzl "kdmapper: $Kdmapper"
 
+# --- Защита от двойной загрузки в одной сессии ---
+if (Test-Path "HKLM:\SYSTEM\NaCoreFilter") {
+    $old = Get-ItemProperty "HKLM:\SYSTEM\NaCoreFilter" -ErrorAction SilentlyContinue
+    if ($old.Key) {
+        Write-Nzl "FAIL: драйвер УЖЕ загружен в этой сессии (Key=$($old.Key) Shm=$($old.Shm))."
+        Write-Nzl "Второй kdmapper поверх первого - кандидат на BSOD. Перезагрузи Windows и грузи один раз."
+        exit 8
+    }
+}
+
 # --- Игра должна быть выключена на момент загрузки ---
 $game = Get-Process "ROB RUN" -ErrorAction SilentlyContinue
 if ($game) {

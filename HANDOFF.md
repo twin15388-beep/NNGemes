@@ -180,3 +180,9 @@
 - Честный вывод: виновник — вручную замапленный образ (наш драйвер — главный кандидат, kdmapper-цепочка не исключена), точная строка неизвестна.
 - Харднинг sc_drv.c (НЕ загружать без пересборки и моего слова): удалены NaImageBase/RtlAddFunctionTable (скан MZ по памяти + ручная регистрация unwind — при kdmapper это кандидат на "exception not handled"), удалены KeStackAttach+ProbeFor+__try во read/write/base/batch — заменены на MmCopyVirtualMemory (возвращает NTSTATUS, SEH не нужен), SD секции теперь self-relative (RtlAbsoluteToSelfRelativeSD).
 - Текущий загруженный ранее бинарь после перезагрузки отсутствует. Новый бинарь не собран у владельца.
+
+## Перед повторной загрузкой (2026-11-27)
+- Харднённый driver.sys у владельца СОБРАЛСЯ: BUILD_OK (MSVC 14.51, SDK 26100).
+- `tools/NZL-SetKernelDump.ps1`: CrashDumpEnabled=2 (kernel MEMORY.DMP) — triage прошлого раза дал ZEROED_STACK. Нужна перезагрузка после.
+- NZL-LoadDriver: защита от двойного мапа (если HKLM\SYSTEM\NaCoreFilter с Key уже есть в сессии — отказ exit 8). Прошлый раз драйвер грузился многократно поверх — кандидат на краш.
+- План теста: SetKernelDump -> reboot -> LoadDriver (игра выкл., один раз) -> reg Dbg*=0 -> probe на explorer.exe (pid аргументом, без игры) -> только потом игра+probe.
