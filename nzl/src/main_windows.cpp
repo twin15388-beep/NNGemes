@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <string>
 #include "nzl/chain.h"
+#include "nzl/driver_memory.h"
 
 struct WinMemory final : nzl::IMemory {
   HANDLE h = nullptr;
@@ -38,6 +39,18 @@ int main() {
   uint64_t ga = module_base(pid, L"GameAssembly.dll");
   uint64_t up = module_base(pid, L"UnityPlayer.dll");
   std::printf("[NZL] pid=%lu GameAssembly=0x%llx UnityPlayer=0x%llx\n", pid, (unsigned long long)ga, (unsigned long long)up);
+  nzl::DriverMemory mem(pid);
+  if (!mem.init()) {
+    std::printf("[NZL] Sharedmem driver NOT loaded (HKLM\\SYSTEM\\NaCoreFilter missing). Build nzl\\driver with build_driver.bat, load driver.sys via kdmapper as admin, rerun.\n");
+    return 4;
+  }
+  std::printf("[NZL] driver transport OK. exe base=0x%llx peb=0x%llx\n",
+              (unsigned long long)mem.base(), (unsigned long long)mem.peb());
+  uint64_t probe = 0;
+  bool ok = mem.read(ga, &probe, sizeof(probe));
+  std::printf("[NZL] GameAssembly first bytes read: %s (0x%llx)\n", ok ? "OK" : "FAILED - EAC/driver denied", (unsigned long long)probe);
+  mem.close();
+  if (!ok) return 5;
   std::printf("[NZL] STOP: root pointer is UNKNOWN for updated build. Run docs/EXTRACT.md, provide dump.cs/script.json + hashes, then root will be wired and validated (class name check) before any ESP read.\n");
   return 3;
 }

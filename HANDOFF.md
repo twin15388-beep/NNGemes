@@ -95,3 +95,11 @@
 - Античит: папка `EasyAntiCheat` + `start_protected_game.exe` (защищённый запуск) + `fix_eac.bat` (НЕ запускать без разбора). Вывод: обновлённый античит = EAC, процесс игры защищён — сначала только файловый дамп (хеши + Il2CppDumper), в процесс не лезем.
 - NZL-Collect.ps1 дополнен: блок anticheat (наличие EAC/protected exe/sentry/crashpad) в report.json.
 - Следующий шаг владельца: NZL-Collect.ps1 -GameDir "D:\tools\steamapps\common\Rob Run" -> nzl_info.zip сюда.
+
+## Sharedmem Driver (Dropbox, 2026-11-27)
+- Скачан `/Sharedmem Driver_[unknowncheats.me]_`: `sc_drv.c` (12129, SHA a2446da4... по Dropbox), `sc.h`, `build_driver.bat`, `README - NEEDED/{README.md, sc_client.h, sc_client.cpp}`. Сохранён в gitignored `dropbox/`, рабочие копии — `nzl/driver/` и `nzl/client/`.
+- Протокол: секция `\BaseNamedObjects\<8 hex от key>`, worker-поток в ядре поллит `seq` (delay 0.5 ms), ключ+имя секции в `HKLM\SYSTEM\NaCoreFilter` (Key DWORD, Shm REG_SZ). Команды 1..7: read/write/base/PEB/region/batch(64)/alloc. Чтение/запись через KeStackAttachProcess + ProbeForRead/Write + RtlCopyMemory. NaGetBase читает PEB+0x10.
+- ВНИМАНИЕ: `NaUnload` в sc_drv.c есть, но `DriverUnload` НИГДЕ не назначается — после загрузки драйвер через sc.exe не выгрузить (только перезагрузка). g_active стартует не в DriverEntry, а в NaStartup-потоке.
+- NZL интеграция: клиент скопирован с одним патчем — timeout 2000 ms в Send() + nullptr-guard во всех Na* (оригинал висел вечно при смерти драйвера). `nzl/include/nzl/driver_memory.h` + `src/driver_memory_windows.cpp` — DriverMemory : IMemory (NaRead). main_windows: pid -> DriverMemory.init (транспорт), base/PEB, пробное чтение GameAssembly; корень ESP по-прежнему стоп до живого дампа (честно, return 3).
+- Сборка в песочнице: cmake configure/build exit 0, nzl_tests PASSED. Драйвер (WDK/MSVC) и Windows-клиент здесь НЕ собирались — нет WDK/Windows.
+- Ветка для загрузки драйвером: build_driver.bat (MSVC+WDK 10.0.26100) -> driver.sys, загрузка kdmapper от админа; build_driver.bat локализован (убран копир в ..\1_run чужих сборок).

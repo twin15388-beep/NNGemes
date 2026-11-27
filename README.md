@@ -78,3 +78,11 @@ cmake --build build
 reader абстракция, chain-resolver, Windows-skeleton без драйвера.
 Для текущего билда игры нужны данные с живой машины — инструкция
 `docs/EXTRACT.md`, сборщик `tools/collect_nzl_info.py`.
+
+## Транспорт NZL: Sharedmem Driver
+
+`nzl/driver/` — драйвер общей памяти (build_driver.bat, MSVC+WDK -> driver.sys,
+загрузка kdmapper от администратора), `nzl/client/` — клиент (NaInit читает
+`HKLM\SYSTEM\NaCoreFilter`). NZL читает игру только через него
+(`DriverMemory`). Драйвер после загрузки не выгружается (DriverUnload не задан) —
+перезагрузка Windows для снятия.
