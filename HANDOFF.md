@@ -133,3 +133,9 @@
 - Все user-mode exe собрались на его MSVC 19.51: nzl_core.lib, nzl_probe.exe, nzl_studio.exe, тесты.
 - `tools/NZL-InstallWdk.ps1`: winget Microsoft.WindowsWDK.10.0.26100 + проверка ntddk.h + ручной fallback (learn.microsoft.com WDK / VS Installer Individual components).
 - После WDK: BuildAll -> driver.sys -> NZL-LoadDriver -> игра -> probe.
+
+## Драйвер СОБРАН у владельца (2026-11-27)
+- WDK реально лежал: KitsRoot10 = D:\Windows Kits\10\, ntddk.h = Include\10.0.26100.0\km\ntddk.h (winget поставил на D:, не C:).
+- build_driver.bat (MSVC 14.51.36231, SDK 10.0.26100.0): compile sc_drv.c OK, link OK, BUILD_OK, driver.sys в nzl/driver/.
+- Все exe собраны: nzl_probe.exe, nzl_studio.exe, тесты.
+- След: kdmapper.exe в nzl/driver -> NZL-LoadDriver (игра выключена) -> TRANSPORT_LOADED -> игра Steam/матч -> nzl_probe.exe -> nzl_probe.txt.
