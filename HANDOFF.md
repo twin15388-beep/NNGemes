@@ -198,3 +198,8 @@
 - Снимок модулей из юзермода FAILED (EAC режет) -> GameAssembly база неизвестна.
 - Добавлена команда NA_CMD_MODULE=8: драйвер идёт по PEB->Ldr InMemoryOrderModuleList через MmCopyVirtualMemory, ищет BaseDllName, возвращает DllBase. Клиент NaGetModule(), probe сначала спрашивает драйвер, снимок — fallback.
 - Требуется пересборка драйвера и ОДНА загрузка по протоколу (игра выкл.). ESP-офсеты по-прежнему ждут nzl_dump.zip.
+
+## Недостающие exe (2026-11-27)
+- kdmapper.exe пропал из nzl/driver (не в git; вероятно, антивирус/очистка). Лечение: tools\NZL-GetKdmapper.ps1 (собирает из D:\kdmapper-src, теперь находит kdmapper_Release.exe).
+- Il2CppDumper владелец так и не скачал. `tools/NZL-GetDumper.ps1`: GitHub API latest release Perfares, net6-win zip -> C:\Il2CppDumper. Затем NZL-Dump.ps1.
+- Драйвер с NA_CMD_MODULE собран (15872, BUILD_OK), но не загружен из-за kdmapper.
