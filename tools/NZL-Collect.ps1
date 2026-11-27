@@ -1,4 +1,4 @@
-<#
+﻿<#
 NZL Studio - collector v1 (PowerShell, Windows)
 Собирает fingerprint текущего билда ROB RUN: хеши GameAssembly.dll,
 UnityPlayer.dll, exe игры и global-metadata.dat + версии файлов.

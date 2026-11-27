@@ -1,4 +1,4 @@
-<#
+﻿<#
 NZL Studio - шаг 2: Il2CppDumper (PowerShell, Windows)
 Запускает Il2CppDumper по файлам ТВОЕГО текущего билда и складывает
 результат в nzl_dump\ (dump.cs, script.json, il2cpp.h + копия report).
