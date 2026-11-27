@@ -282,3 +282,14 @@
   and every-256-iterations progress, FAIL line with i/addr.
 - Owner: Ctrl+C old probe, git pull + BuildAll (probe only changed),
   rerun probe WITHOUT reboot/reload (driver stays loaded this session).
+
+## BSOD FIX VERIFIED LIVE (2026-11-27)
+- New probe on pid=9424 (Key=3097888868): single NaQueryRegion OK in 16ms
+  (base=exe base size=0x1000 state=0x1000 type=MEM_IMAGE), then region
+  scan passed i=4608+ regions with NO BSOD. Before the fix the FIRST
+  REGION command crashed the box - NaRegion detach-copy fix confirmed.
+- Cost: ~16ms per REGION (worker KeDelay tick granularity), full scan
+  is minutes and was done TWICE (GA then UP). probe now does ONE pass
+  for both modules with early exit when both are found.
+- Owner told to Ctrl+C the explorer scan (REGION already proven) and
+  rerun the one-pass probe against the GAME, no reboot/driver reload.

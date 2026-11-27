@@ -104,11 +104,17 @@ int main(int argc, char** argv) {
          ok0 ? "OK" : "FAIL/TIMEOUT", (unsigned long long)(GetTickCount64() - t0),
          (unsigned long long)r0.base, (unsigned long long)r0.size, r0.state, r0.protect, r0.type);
   }
-  auto find_image = [&](const char* want) -> uint64_t {
+  // ONE pass for BOTH modules: each NaQueryRegion costs ~16 ms (worker
+  // poll tick), and the old code scanned the whole address space twice
+  // (~4600+ regions seen live on explorer = minutes per pass). Return as
+  // soon as both are found.
+  uint64_t found_ga = 0, found_up = 0;
+  auto find_images = [&]() {
+    const char* want = "GameAssembly.dll+UnityPlayer.dll";
     uint64_t addr = 0x10000;
     ULONGLONG scan_t0 = GetTickCount64();
     logf("[probe] region-scan start want=%s\n", want);
-    for (int i = 0; i < 8192 && addr < 0x0000800000000000ULL; i++) {
+    for (int i = 0; i < 16384 && addr < 0x0000800000000000ULL; i++) {
       NaRegion r{};
       if (!NaQueryRegion((uint32_t)pid, addr, &r)) {
         logf("[probe] region-scan %s: NaQueryRegion FAIL at i=%d addr=0x%llx (scan ends)\n",
@@ -116,8 +122,9 @@ int main(int argc, char** argv) {
         break;
       }
       if ((i % 256) == 0)
-        logf("[probe] region-scan %s: i=%d addr=0x%llx +%llums\n", want, i,
-             (unsigned long long)addr, (unsigned long long)(GetTickCount64() - scan_t0));
+        logf("[probe] region-scan %s: i=%d addr=0x%llx +%llums ga=0x%llx up=0x%llx\n", want, i,
+             (unsigned long long)addr, (unsigned long long)(GetTickCount64() - scan_t0),
+             (unsigned long long)found_ga, (unsigned long long)found_up);
       uint64_t next = r.base + (r.size ? r.size : 0x1000);
       if (next <= addr) break;
       if (r.type == 0x1000000 /*MEM_IMAGE*/ && r.base) {
@@ -133,7 +140,12 @@ int main(int argc, char** argv) {
               char name[64] = {};
               if (name_rva && NaRead((uint32_t)pid, r.base + name_rva, 63, name)) {
                 name[63] = 0;
-                if (_stricmp(name, want) == 0) return r.base;
+                if (_stricmp(name, "GameAssembly.dll") == 0) found_ga = r.base;
+                if (_stricmp(name, "UnityPlayer.dll") == 0) found_up = r.base;
+                if (found_ga && found_up) {
+                  logf("[probe] region-scan: both modules found at i=%d, early exit\n", i);
+                  return;
+                }
               }
             }
           }
@@ -141,10 +153,10 @@ int main(int argc, char** argv) {
       }
       addr = next;
     }
-    return 0;
   };
-  uint64_t ga = find_image("GameAssembly.dll");
-  uint64_t up = find_image("UnityPlayer.dll");
+  find_images();
+  uint64_t ga = found_ga;
+  uint64_t up = found_up;
   logf("[probe] region-scan modules: GameAssembly=0x%llx UnityPlayer=0x%llx\n", (unsigned long long)ga, (unsigned long long)up);
   bool snap = false;
   if (!ga) { ga = module_base(pid, L"GameAssembly.dll", &snap); logf("[probe] snapshot fallback GameAssembly=0x%llx (%s)\n", (unsigned long long)ga, snap ? "OK" : "FAILED"); }
