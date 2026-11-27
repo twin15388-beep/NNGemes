@@ -544,3 +544,23 @@
   chain/pipeline tests pass. Full Win32/MSVC+WDK build and live ESP behavior
   still require owner to run tools/NZL-BuildAll.ps1 on Windows; offsets/HP/role
   remain dump-derived.
+
+## ESP refresh cadence / measurement (2026-11-27)
+- Player positions now refresh every completed render cycle; camera position,
+  quaternion and fallback axes share one `NaBatchRead` command. Player roster
+  is checked once/second, pointer records/chains every 3s, and HP/armor/role/
+  dead metadata every 250ms. This avoids rereading stable character fields on
+  every position update.
+- Optional cars refresh at 250ms and loot at 1s; cached world positions are
+  reprojected and their distance recomputed each player frame. Match-chain or
+  PID changes invalidate the caches.
+- Worker paces toward 16ms/cycle (about 60Hz) when reads are fast and does not
+  add a fixed delay when the work takes longer. The overlay/menu status now
+  reports measured completed updates/second and per-cycle work time; it is a
+  runtime measurement, not an inferred value from `Sleep`.
+- Validation in sandbox: Windows GNU x64 object compile of
+  `overlay_windows.cpp` passed (only the existing case warning for
+  `<Windows.h>`); direct g++ chain and pipeline test binaries both passed.
+  CMake is not installed here; no Windows/MSVC+WDK build or live-match rate
+  measurement has been performed, so the actual FPS remains to be confirmed
+  by the displayed status in-game.

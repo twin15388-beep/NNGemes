@@ -82,10 +82,8 @@ static nzl::Vec3f normalize(nzl::Vec3f v) {
   return l > 0.001f ? nzl::Vec3f{v.x / l, v.y / l, v.z / l} : v;
 }
 // Unity quaternion (x,y,z,w) -> camera basis (forward = rotation * +Z).
-static bool basis_from_quat(const nzl::IMemory& m, uint64_t quat_addr,
-                            nzl::Vec3f& fwd, nzl::Vec3f& right, nzl::Vec3f& up) {
-  float q[4] = {};
-  if (!m.read(quat_addr, q, 16)) return false;
+static bool basis_from_quat_values(const float q[4],
+                                   nzl::Vec3f& fwd, nzl::Vec3f& right, nzl::Vec3f& up) {
   float x = q[0], y = q[1], z = q[2], w = q[3];
   float len = std::sqrt(x * x + y * y + z * z + w * w);
   if (len < 0.5f || len > 1.5f) return false;
@@ -169,9 +167,18 @@ static std::vector<uint64_t> dict_values(Ctx& c, uint64_t dict) {
   return out;
 }
 struct BatchField { uint64_t address = 0; uint32_t size = 0; };
+struct PlayerCacheEntry {
+  uint64_t character = 0, transform = 0, private_model = 0, armor_prim = 0, role_prim = 0;
+  uint64_t hp_value_addr = 0, hp_max_addr = 0, armor_value_addr = 0, role_index_addr = 0;
+  nzl::Vec3f pos{}; int32_t id = 0, hp = -1, maxhp = 0, role = -2; bool dead = false, armor = false;
+};
+struct PlayerCache {
+  std::vector<PlayerCacheEntry> entries;
+  ULONGLONG last_roster_check = 0, last_record_refresh = 0, last_meta_refresh = 0;
+};
 // Read up to 64 independent fields per driver command, preserving one
-// output slot per request. This avoids hundreds of serialized 1 ms reads
-// for HP/armor/role chains on a full player list.
+// output slot per request. Player pointer chains are refreshed separately
+// from the per-frame position batch below.
 static std::vector<uint64_t> batch_read_fields(uint32_t pid, const std::vector<BatchField>& fields) {
   std::vector<uint64_t> values(fields.size(), 0);
   for (size_t base = 0; base < fields.size(); base += 64) {
@@ -207,98 +214,142 @@ static void fill_positions(Ctx& c, const std::vector<uint64_t>& objs, uint32_t t
       for (int i = 0; i < m; i++) { float f[3]; std::memcpy(f, pb.data() + i * 12, 12); pos_out[base + i] = {f[0], f[1], f[2]}; }
   }
 }
-static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& local) {
-  std::vector<nzl::PlayerSnap> out;
-  auto chars = dict_values(c, c.chain.dict);
-  int n = (int)chars.size();
-  if (!n) return out;
-  std::vector<nzl::Vec3f> pos; fill_positions(c, chars, c.off.char_transform, pos);
-  std::vector<int32_t> ids(n, 0); std::vector<uint8_t> dead(n, 0);
-  for (int base = 0; base < n; base += 32) {
-    int m = (n - base) < 32 ? (n - base) : 32;
-    std::vector<NaItem> ii; std::vector<uint8_t> ib(m * 8, 0);
-    for (int i = 0; i < m; i++) {
-      ii.push_back(NaItem{chars[base + i] + c.off.char_id, (uint32_t)(i * 8), 4});
-      ii.push_back(NaItem{chars[base + i] + c.off.char_is_dead, (uint32_t)(i * 8 + 4), 1});
-    }
-    if (NaBatchRead(c.pid, ii.data(), (uint32_t)ii.size(), ib.data(), m * 8))
-      for (int i = 0; i < m; i++) { std::memcpy(&ids[base + i], ib.data() + i * 8, 4); dead[base + i] = ib[i * 8 + 4]; }
-  }
-  std::vector<uint64_t> hp_priv(n), armor_prim(n), role_prim(n);
-  if (c.show_hp || c.show_armor || c.show_roles) {
-    std::vector<BatchField> req; std::vector<int> hp_i(n, -1), armor_i(n, -1), role_i(n, -1);
-    for (int i = 0; i < n; ++i) {
-      if (c.show_hp) { hp_i[i] = (int)req.size(); req.push_back({chars[i] + 0x10, 8}); }
-      if (c.show_armor) { armor_i[i] = (int)req.size(); req.push_back({chars[i] + 0x1B8, 8}); }
-      if (c.show_roles) { role_i[i] = (int)req.size(); req.push_back({chars[i] + 0x208, 8}); }
-    }
-    auto v = batch_read_fields(c.pid, req);
-    for (int i = 0; i < n; ++i) {
-      if (hp_i[i] >= 0) hp_priv[i] = v[hp_i[i]];
-      if (armor_i[i] >= 0) armor_prim[i] = v[armor_i[i]];
-      if (role_i[i] >= 0) role_prim[i] = v[role_i[i]];
+static bool same_roster(const PlayerCache& cache, const std::vector<uint64_t>& chars) {
+  if (cache.entries.size() != chars.size()) return false;
+  for (size_t i = 0; i < chars.size(); ++i) if (cache.entries[i].character != chars[i]) return false;
+  return true;
+}
+static bool refresh_player_records(Ctx& c, PlayerCache& cache) {
+  constexpr uint32_t kRecordSize = 0x200; // char+0x10 through role primitive at char+0x208
+  const size_t n = cache.entries.size();
+  for (size_t base = 0; base < n; base += 64) {
+    uint32_t m = (uint32_t)std::min<size_t>(64, n - base);
+    std::vector<NaItem> items; items.reserve(m);
+    std::vector<uint8_t> buf((size_t)m * kRecordSize, 0);
+    for (uint32_t i = 0; i < m; ++i)
+      items.push_back(NaItem{cache.entries[base + i].character + 0x10, i * kRecordSize, kRecordSize});
+    if (!NaBatchRead(c.pid, items.data(), m, buf.data(), m * kRecordSize)) return false;
+    for (uint32_t i = 0; i < m; ++i) {
+      auto& e = cache.entries[base + i];
+      const uint8_t* raw = buf.data() + (size_t)i * kRecordSize;
+      std::memcpy(&e.private_model, raw, 8); // char+0x10
+      std::memcpy(&e.id, raw + c.off.char_id - 0x10, 4);
+      std::memcpy(&e.transform, raw + c.off.char_transform - 0x10, 8);
+      e.dead = raw[c.off.char_is_dead - 0x10] != 0;
+      std::memcpy(&e.armor_prim, raw + 0x1B8 - 0x10, 8);
+      std::memcpy(&e.role_prim, raw + 0x208 - 0x10, 8);
+      e.hp_value_addr = e.hp_max_addr = e.armor_value_addr = e.role_index_addr = 0;
+      e.hp = -1; e.maxhp = 0; e.armor = false; e.role = -2;
     }
   }
+
+  // Resolve the relatively stable HP/armor/role pointer chains during a
+  // roster refresh / periodic record refresh, not on every ESP frame.
+  std::vector<BatchField> fields;
+  std::vector<int> hp_model_i(n, -1), armor_data_i(n, -1), role_data_i(n, -1);
+  for (size_t i = 0; i < n; ++i) {
+    const auto& e = cache.entries[i];
+    if (e.private_model) { hp_model_i[i] = (int)fields.size(); fields.push_back({e.private_model + 0x1B0, 8}); }
+    if (e.armor_prim) { armor_data_i[i] = (int)fields.size(); fields.push_back({e.armor_prim + 0x10, 8}); }
+    if (e.role_prim) { role_data_i[i] = (int)fields.size(); fields.push_back({e.role_prim + 0x10, 8}); }
+  }
+  auto v1 = batch_read_fields(c.pid, fields);
   std::vector<uint64_t> hp_model(n), armor_data(n), role_data(n);
-  {
-    std::vector<BatchField> req; std::vector<int> hp_i(n, -1), armor_i(n, -1), role_i(n, -1);
-    for (int i = 0; i < n; ++i) {
-      if (c.show_hp && hp_priv[i]) { hp_i[i] = (int)req.size(); req.push_back({hp_priv[i] + 0x1B0, 8}); }
-      if (c.show_armor && armor_prim[i]) { armor_i[i] = (int)req.size(); req.push_back({armor_prim[i] + 0x10, 8}); }
-      if (c.show_roles && role_prim[i]) { role_i[i] = (int)req.size(); req.push_back({role_prim[i] + 0x10, 8}); }
+  for (size_t i = 0; i < n; ++i) {
+    if (hp_model_i[i] >= 0) hp_model[i] = v1[hp_model_i[i]];
+    if (armor_data_i[i] >= 0) armor_data[i] = v1[armor_data_i[i]];
+    if (role_data_i[i] >= 0) role_data[i] = v1[role_data_i[i]];
+  }
+  fields.clear();
+  std::vector<int> hp_data_i(n, -1), role_desc_i(n, -1);
+  for (size_t i = 0; i < n; ++i) {
+    if (hp_model[i]) {
+      hp_data_i[i] = (int)fields.size(); fields.push_back({hp_model[i] + 0x10, 8});
+      cache.entries[i].hp_max_addr = hp_model[i] + 0x20;
     }
-    auto v = batch_read_fields(c.pid, req);
-    for (int i = 0; i < n; ++i) {
-      if (hp_i[i] >= 0) hp_model[i] = v[hp_i[i]];
-      if (armor_i[i] >= 0) armor_data[i] = v[armor_i[i]];
-      if (role_i[i] >= 0) role_data[i] = v[role_i[i]];
+    if (armor_data[i]) cache.entries[i].armor_value_addr = armor_data[i] + 0x18;
+    if (role_data[i]) { role_desc_i[i] = (int)fields.size(); fields.push_back({role_data[i] + 0x18, 8}); }
+  }
+  auto v2 = batch_read_fields(c.pid, fields);
+  for (size_t i = 0; i < n; ++i) {
+    if (hp_data_i[i] >= 0 && v2[hp_data_i[i]]) cache.entries[i].hp_value_addr = v2[hp_data_i[i]] + 0x18;
+    if (role_desc_i[i] >= 0 && v2[role_desc_i[i]]) cache.entries[i].role_index_addr = v2[role_desc_i[i]] + 0x18;
+  }
+  return true;
+}
+static void refresh_player_positions(Ctx& c, PlayerCache& cache) {
+  const size_t n = cache.entries.size();
+  for (size_t base = 0; base < n; base += 64) {
+    uint32_t m = (uint32_t)std::min<size_t>(64, n - base);
+    std::vector<NaItem> items; items.reserve(m);
+    std::vector<uint8_t> buf((size_t)m * 12, 0);
+    for (uint32_t i = 0; i < m; ++i) {
+      const auto& e = cache.entries[base + i];
+      items.push_back(NaItem{e.transform ? e.transform + 0x10 : 0, i * 12, e.transform ? 12u : 0u});
+    }
+    if (!NaBatchRead(c.pid, items.data(), m, buf.data(), m * 12)) continue;
+    for (uint32_t i = 0; i < m; ++i) {
+      auto& e = cache.entries[base + i];
+      float p[3]{}; std::memcpy(p, buf.data() + (size_t)i * 12, 12);
+      e.pos = {p[0], p[1], p[2]};
     }
   }
-  std::vector<uint64_t> hp_value_data(n), hp_max(n), armor_value(n), role_desc(n);
-  {
-    std::vector<BatchField> req; std::vector<int> hp_data_i(n, -1), hp_max_i(n, -1), armor_i(n, -1), role_i(n, -1);
-    for (int i = 0; i < n; ++i) {
-      if (c.show_hp && hp_model[i]) {
-        hp_data_i[i] = (int)req.size(); req.push_back({hp_model[i] + 0x10, 8});
-        hp_max_i[i] = (int)req.size(); req.push_back({hp_model[i] + 0x20, 4});
-      }
-      if (c.show_armor && armor_data[i]) { armor_i[i] = (int)req.size(); req.push_back({armor_data[i] + 0x18, 1}); }
-      if (c.show_roles && role_data[i]) { role_i[i] = (int)req.size(); req.push_back({role_data[i] + 0x18, 8}); }
-    }
-    auto v = batch_read_fields(c.pid, req);
-    for (int i = 0; i < n; ++i) {
-      if (hp_data_i[i] >= 0) hp_value_data[i] = v[hp_data_i[i]];
-      if (hp_max_i[i] >= 0) hp_max[i] = (uint32_t)v[hp_max_i[i]];
-      if (armor_i[i] >= 0) armor_value[i] = v[armor_i[i]];
-      if (role_i[i] >= 0) role_desc[i] = v[role_i[i]];
-    }
+}
+static void refresh_player_metadata(Ctx& c, PlayerCache& cache) {
+  std::vector<BatchField> fields;
+  struct Indices { int hp = -1, maxhp = -1, armor = -1, role = -1, dead = -1; };
+  std::vector<Indices> ix(cache.entries.size());
+  for (size_t i = 0; i < cache.entries.size(); ++i) {
+    auto& e = cache.entries[i];
+    if (c.show_hp && e.hp_value_addr) { ix[i].hp = (int)fields.size(); fields.push_back({e.hp_value_addr, 4}); }
+    if (c.show_hp && e.hp_max_addr) { ix[i].maxhp = (int)fields.size(); fields.push_back({e.hp_max_addr, 4}); }
+    if (c.show_armor && e.armor_value_addr) { ix[i].armor = (int)fields.size(); fields.push_back({e.armor_value_addr, 1}); }
+    if (c.show_roles && e.role_index_addr) { ix[i].role = (int)fields.size(); fields.push_back({e.role_index_addr, 4}); }
+    ix[i].dead = (int)fields.size(); fields.push_back({e.character + c.off.char_is_dead, 1});
   }
-  std::vector<uint64_t> hp_value(n), role_index(n);
-  {
-    std::vector<BatchField> req; std::vector<int> hp_i(n, -1), role_i(n, -1);
-    for (int i = 0; i < n; ++i) {
-      if (c.show_hp && hp_value_data[i]) { hp_i[i] = (int)req.size(); req.push_back({hp_value_data[i] + 0x18, 4}); }
-      if (c.show_roles && role_desc[i]) { role_i[i] = (int)req.size(); req.push_back({role_desc[i] + 0x18, 4}); }
-    }
-    auto v = batch_read_fields(c.pid, req);
-    for (int i = 0; i < n; ++i) {
-      if (hp_i[i] >= 0) hp_value[i] = (uint32_t)v[hp_i[i]];
-      if (role_i[i] >= 0) role_index[i] = (uint32_t)v[role_i[i]];
-    }
+  auto values = batch_read_fields(c.pid, fields);
+  for (size_t i = 0; i < cache.entries.size(); ++i) {
+    auto& e = cache.entries[i]; const auto& x = ix[i];
+    if (x.hp >= 0) { int32_t v = (int32_t)(uint32_t)values[x.hp]; e.hp = (v >= 0 && v <= 100000) ? v : -1; }
+    else e.hp = -1;
+    if (x.maxhp >= 0) { int32_t v = (int32_t)(uint32_t)values[x.maxhp]; e.maxhp = (v > 0 && v <= 100000) ? v : 0; }
+    else e.maxhp = 0;
+    e.armor = x.armor >= 0 && values[x.armor] != 0;
+    e.role = (x.role >= 0 && values[x.role] <= 4) ? (int32_t)values[x.role] : -2;
+    e.dead = values[x.dead] != 0;
   }
-  for (int i = 0; i < n; i++) {
-    nzl::Vec3f p = pos[i];
+}
+static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& local,
+                                                      PlayerCache& cache, ULONGLONG now) {
+  if (!cache.last_roster_check || now - cache.last_roster_check >= 1000) {
+    auto chars = dict_values(c, c.chain.dict);
+    bool changed = !same_roster(cache, chars);
+    if (changed) {
+      cache.entries.clear(); cache.entries.reserve(chars.size());
+      for (uint64_t ch : chars) { PlayerCacheEntry e; e.character = ch; cache.entries.push_back(e); }
+      cache.last_record_refresh = 0;
+    }
+    cache.last_roster_check = now;
+  }
+  if (cache.entries.empty()) return {};
+  if ((!cache.last_record_refresh || now - cache.last_record_refresh >= 3000) &&
+      refresh_player_records(c, cache)) {
+    cache.last_record_refresh = now;
+    cache.last_meta_refresh = 0;
+  }
+  refresh_player_positions(c, cache);
+  if (!cache.last_meta_refresh || now - cache.last_meta_refresh >= 250) {
+    refresh_player_metadata(c, cache);
+    cache.last_meta_refresh = now;
+  }
+  std::vector<nzl::PlayerSnap> out; out.reserve(cache.entries.size());
+  for (const auto& e : cache.entries) {
+    const nzl::Vec3f& p = e.pos;
     if ((p.x == 0 && p.y == 0 && p.z == 0) || !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
-    nzl::PlayerSnap s; s.addr = chars[i]; s.id = ids[i]; s.dead = dead[i] != 0; s.pos = p;
+    nzl::PlayerSnap s; s.addr = e.character; s.id = e.id; s.dead = e.dead; s.pos = p;
     float dx = p.x - local.x, dy = p.y - local.y, dz = p.z - local.z;
     s.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if (c.show_hp) {
-      int32_t hp = (int32_t)hp_value[i], mx = (int32_t)hp_max[i];
-      if (hp_value_data[i] && hp >= 0 && hp <= 100000) s.hp = hp;
-      if (mx > 0 && mx <= 100000) s.maxhp = mx;
-    }
-    if (c.show_armor) s.armor = armor_data[i] && armor_value[i] != 0;
-    if (c.show_roles && role_desc[i] && role_index[i] <= 4) s.role = (int32_t)role_index[i];
+    s.hp = e.hp; s.maxhp = e.maxhp; s.armor = e.armor; s.role = e.role;
     out.push_back(s);
   }
   return out;
@@ -940,17 +991,18 @@ static void esp_worker(Ctx* ui) {
   const char* failed_class = nullptr;
   nzl::Offsets off;
   nzl::ChainResult chain;
+  PlayerCache player_cache;
   while (!g_stop.load()) {
     DWORD pid = find_pid(L"ROB RUN.exe");
     if (!pid) {
       if (mem) { mem->close(); mem.reset(); }
-      active_pid = 0; mem_ready = false; ga = 0; game_obj = 0; chain = {};
+      active_pid = 0; mem_ready = false; ga = 0; game_obj = 0; chain = {}; player_cache = {};
       set_runtime(ui, 0, false, "Waiting for ROB RUN process", true);
       Sleep(500); continue;
     }
     if (pid != active_pid) {
       if (mem) { mem->close(); mem.reset(); }
-      active_pid = pid; mem_ready = false; ga = 0; game_obj = 0; chain = {};
+      active_pid = pid; mem_ready = false; ga = 0; game_obj = 0; chain = {}; player_cache = {};
       std::fill(std::begin(klass), std::end(klass), 0);
       mem = std::make_unique<nzl::DriverMemory>(pid);
       set_runtime(ui, pid, false, "ROB RUN found - connecting to driver", true);
@@ -985,17 +1037,23 @@ static void esp_worker(Ctx* ui) {
       }
     }
     chain = nzl::resolve_chain_from_game(*mem, game_obj, off);
-    if (!chain.ok) {
-      game_obj = 0;
-      set_runtime(ui, pid, false, "Match is loading - waiting for battle chain", true);
-      Sleep(1000); continue;
-    }
+      if (!chain.ok) {
+        game_obj = 0; player_cache = {};
+        set_runtime(ui, pid, false, "Match is loading - waiting for battle chain", true);
+        Sleep(1000); continue;
+      }
     Ctx work; work.pid = pid; work.mem = mem.get(); work.off = off; work.chain = chain;
     set_runtime(ui, pid, true, "ESP connected - syncing players", false);
     ULONGLONG last_chain_check = 0, last_pid_check = 0;
+    ULONGLONG last_car_refresh = 0, last_loot_refresh = 0;
+    ULONGLONG perf_window_start = GetTickCount64();
+    ULONGLONG last_work_ms = 0;
+    uint32_t perf_frames = 0;
+    double measured_fps = 0.0;
     bool leave_match = false;
     while (!g_stop.load() && !leave_match) {
-      ULONGLONG now = GetTickCount64();
+      ULONGLONG frame_start = GetTickCount64();
+      ULONGLONG now = frame_start;
       if (now - last_pid_check > 1000) {
         last_pid_check = now;
         if (find_pid(L"ROB RUN.exe") != active_pid) { leave_match = true; break; }
@@ -1008,29 +1066,47 @@ static void esp_worker(Ctx* ui) {
         last_chain_check = now;
         nzl::ChainResult fresh = nzl::resolve_chain_from_game(*mem, game_obj, off);
         if (!fresh.ok) {
-          game_obj = 0; chain = {}; leave_match = true;
+          game_obj = 0; chain = {}; player_cache = {}; leave_match = true;
           set_runtime(ui, pid, false, "Match changed - waiting to reconnect", true);
           break;
         }
+        if (fresh.dict != chain.dict || fresh.world_entities != chain.world_entities) {
+          player_cache = {};
+          work.cars.clear(); work.loot.clear();
+          last_car_refresh = last_loot_refresh = 0;
+        }
         chain = fresh; work.chain = fresh;
       }
-      auto rd3 = [&](uint64_t a, nzl::Vec3f& v) {
-        float f[3] = {};
-        if (!mem->read(a, f, sizeof(f))) return false;
-        v = {f[0], f[1], f[2]};
-        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+      // Camera state is fetched in one driver round-trip. Keep the legacy
+      // forward/right/up fields in the same batch as a fallback if the
+      // quaternion is unavailable or the user selects that basis.
+      NaItem camera_items[] = {
+        {chain.camera_model + off.cam_pos, 0, 12},
+        {chain.camera_model + 0x2C, 12, 16},
+        {chain.camera_model + off.cam_fwd, 28, 12},
+        {chain.camera_model + off.cam_right, 40, 12},
+        {chain.camera_model + off.cam_up, 52, 12},
       };
-      nzl::Vec3f cpos{}, cfwd{}, cright{}, cup{};
-      if (!rd3(chain.camera_model + off.cam_pos, cpos)) { Sleep(100); continue; }
-      bool basis_ok = work.basis_quat && basis_from_quat(*mem, chain.camera_model + 0x2C, cfwd, cright, cup);
+      uint8_t camera_buf[64]{};
+      if (!NaBatchRead(pid, camera_items, (uint32_t)std::size(camera_items), camera_buf, sizeof(camera_buf))) {
+        Sleep(100); continue;
+      }
+      float cpos_raw[3]{}, quaternion[4]{}, forward_raw[3]{}, right_raw[3]{}, up_raw[3]{};
+      std::memcpy(cpos_raw, camera_buf, 12);
+      std::memcpy(quaternion, camera_buf + 12, 16);
+      std::memcpy(forward_raw, camera_buf + 28, 12);
+      std::memcpy(right_raw, camera_buf + 40, 12);
+      std::memcpy(up_raw, camera_buf + 52, 12);
+      nzl::Vec3f cpos{cpos_raw[0], cpos_raw[1], cpos_raw[2]}, cfwd{}, cright{}, cup{};
+      if (!std::isfinite(cpos.x) || !std::isfinite(cpos.y) || !std::isfinite(cpos.z)) { Sleep(100); continue; }
+      bool basis_ok = work.basis_quat && basis_from_quat_values(quaternion, cfwd, cright, cup);
       if (!basis_ok) {
-        rd3(chain.camera_model + off.cam_fwd, cfwd);
-        rd3(chain.camera_model + off.cam_right, cright);
-        rd3(chain.camera_model + off.cam_up, cup);
-        cfwd = normalize(cfwd); cright = normalize(cright); cup = normalize(cup);
+        cfwd = normalize({forward_raw[0], forward_raw[1], forward_raw[2]});
+        cright = normalize({right_raw[0], right_raw[1], right_raw[2]});
+        cup = normalize({up_raw[0], up_raw[1], up_raw[2]});
       }
       work.cam_fwd = cfwd; work.cam_right = cright; work.radar_cam = cpos;
-      auto players = snapshot_players(work, cpos);
+      auto players = snapshot_players(work, cpos, player_cache, now);
       nzl::CameraView view;
       view.pos = cpos; view.fwd = cfwd; view.right = cright; view.up = cup;
       view.width = std::max(work.width, 1); view.height = std::max(work.height, 1); view.fov_deg = work.fov;
@@ -1052,13 +1128,30 @@ static void esp_worker(Ctx* ui) {
         work.render.push_back(e);
       }
       if (work.show_cars) {
-        work.cars = snapshot_cars(work, cpos);
-        for (auto& car : work.cars) { float depth = 0; car.on = car.dist <= work.max_dist && nzl::world_to_screen(view, car.pos, car.sx, car.sy, depth); }
-      } else work.cars.clear();
+        // Cars move, but do not need a full dictionary walk at render rate.
+        if (!last_car_refresh || now - last_car_refresh >= 250) {
+          work.cars = snapshot_cars(work, cpos);
+          last_car_refresh = now;
+        }
+        for (auto& car : work.cars) {
+          float dx = car.pos.x - cpos.x, dy = car.pos.y - cpos.y, dz = car.pos.z - cpos.z;
+          car.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+          float depth = 0; car.on = car.dist <= work.max_dist && nzl::world_to_screen(view, car.pos, car.sx, car.sy, depth);
+        }
+      } else { work.cars.clear(); last_car_refresh = 0; }
       if (work.show_loot) {
-        work.loot = snapshot_loot(work, cpos);
-        for (auto& loot : work.loot) { float depth = 0; loot.on = loot.dist <= work.max_dist && nzl::world_to_screen(view, loot.pos, loot.sx, loot.sy, depth); }
-      } else work.loot.clear();
+        // Loot is mostly static; refresh the collection once per second and
+        // reproject its cached positions every player frame.
+        if (!last_loot_refresh || now - last_loot_refresh >= 1000) {
+          work.loot = snapshot_loot(work, cpos);
+          last_loot_refresh = now;
+        }
+        for (auto& loot : work.loot) {
+          float dx = loot.pos.x - cpos.x, dy = loot.pos.y - cpos.y, dz = loot.pos.z - cpos.z;
+          loot.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+          float depth = 0; loot.on = loot.dist <= work.max_dist && nzl::world_to_screen(view, loot.pos, loot.sx, loot.sy, depth);
+        }
+      } else { work.loot.clear(); last_loot_refresh = 0; }
       int aim_key = kAimKeys[std::clamp(work.aim_key, 0, 3)];
       HWND foreground = GetForegroundWindow(); DWORD foreground_pid = 0;
       if (foreground) GetWindowThreadProcessId(foreground, &foreground_pid);
@@ -1077,8 +1170,22 @@ static void esp_worker(Ctx* ui) {
           if (in.mi.dx || in.mi.dy) SendInput(1, &in, sizeof(INPUT));
         }
       }
-      char status[128];
-      std::snprintf(status, sizeof(status), "ESP active  |  players: %zu  |  projected: %zu", players.size(), work.render.size());
+      ULONGLONG sample_time = GetTickCount64();
+      last_work_ms = sample_time - frame_start;
+      ++perf_frames;
+      ULONGLONG sample_elapsed = sample_time - perf_window_start;
+      if (sample_elapsed >= 1000) {
+        measured_fps = sample_elapsed ? (double)perf_frames * 1000.0 / (double)sample_elapsed : 0.0;
+        perf_frames = 0;
+        perf_window_start = sample_time;
+      }
+      char status[160];
+      if (measured_fps > 0.0)
+        std::snprintf(status, sizeof(status), "ESP %.1f updates/s  |  work %llums  |  players %zu / %zu",
+                      measured_fps, (unsigned long long)last_work_ms, players.size(), work.render.size());
+      else
+        std::snprintf(status, sizeof(status), "ESP measuring update rate...  |  players %zu / %zu",
+                      players.size(), work.render.size());
       {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         ui->render = work.render; ui->loot = work.loot; ui->cars = work.cars;
@@ -1086,7 +1193,10 @@ static void esp_worker(Ctx* ui) {
         ui->attached_pid = pid; ui->esp_ready = true; ui->status = status;
       }
       if (ui->overlay_wnd) InvalidateRect(ui->overlay_wnd, nullptr, FALSE);
-      Sleep(90);
+      // Pace towards 60Hz when processing is fast; if remote reads take longer,
+      // immediately continue and let the displayed measurement reveal the rate.
+      ULONGLONG cycle_ms = GetTickCount64() - frame_start;
+      if (cycle_ms < 16) Sleep((DWORD)(16 - cycle_ms));
     }
   }
   if (mem) mem->close();
