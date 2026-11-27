@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 #include "../client/sc_client.h"
 
 static FILE* g_log = nullptr;
@@ -181,6 +182,127 @@ int main(int argc, char** argv) {
       logf("[probe] NaQueryRegion(GameAssembly) FAILED\n");
   }
   logf("[probe] RESULT: %s\n", transport ? "TRANSPORT_OK - driver reads the game; next step is offsets from Il2CppDumper (nzl_dump.zip)" : "TRANSPORT_FAIL - see lines above, send me nzl_probe.txt");
+  // ---- ROOT FINDER (build 26866884, offsets cross-checked vs SDK dump) --
+  // UnityEntry has no TypeInfo slot and no static instance field, so the
+  // root is found as a live Game object: TypeInfo slots DO exist for every
+  // class in the chain (RVAs below, from build-matched script.json). Read
+  // each Il2CppClass*, verify its name (Il2CppClass.name @ +0x10), then
+  // heap-scan MEM_PRIVATE committed regions for an object whose header
+  // qword == Game class, and validate the WHOLE chain by class pointers:
+  // Game -(+0xD8|0xD0)-> GameModel -(+0x10)-> BattleModel -(+0x90)->
+  // BattleEntitiesModel -(+0x60)-> WorldEntitiesModel -(+0x18)-> dict,
+  // BattleModel -(+0x358)-> BattleCameraModel. A candidate that fails any
+  // class check is rejected; nothing here is assumed.
+  if (ga) {
+    struct Slot { const char* label; uint64_t rva; const char* want_name; };
+    const Slot slots[] = {
+      { "Game",              0x81B7710ULL, "Game" },
+      { "GameModel",         0x81B86D8ULL, "GameModel" },
+      { "BattleModel",       0x82496E8ULL, "BattleModel" },
+      { "BattleEntitiesModel",0x8245928ULL, "BattleEntitiesModel" },
+      { "WorldEntitiesModel",0x82295C8ULL, "WorldEntitiesModel" },
+      { "BattleCameraModel", 0x823C210ULL, "BattleCameraModel" },
+      { "BattleCharacterModel",0x823FFD0ULL, "BattleCharacterModel" },
+    };
+    uint64_t klass[7] = {};
+    auto read_ptr = [&](uint64_t a, uint64_t* out) -> bool {
+      return NaRead((uint32_t)pid, a, 8, out) != false;
+    };
+    auto klass_name = [&](uint64_t k, char* out, size_t cap) -> bool {
+      uint64_t np = 0;
+      if (!k || !read_ptr(k + 0x10, &np) || !np) return false;
+      std::memset(out, 0, cap);
+      if (!NaRead((uint32_t)pid, np, (uint32_t)cap - 1, out)) return false;
+      out[cap - 1] = 0;
+      return out[0] != 0;
+    };
+    bool klass_ok = true;
+    for (int i = 0; i < 7; i++) {
+      if (!read_ptr(ga + slots[i].rva, &klass[i])) klass[i] = 0;
+      char nm[64] = {};
+      bool got = klass[i] && klass_name(klass[i], nm, sizeof(nm));
+      logf("[root] TypeInfo %s slot RVA=0x%llx klass=0x%llx name='%s' %s\n",
+           slots[i].label, (unsigned long long)slots[i].rva,
+           (unsigned long long)(klass[i] ? klass[i] : 0), got ? nm : "?",
+           (got && std::strcmp(nm, slots[i].want_name) == 0) ? "NAME_OK" : "NAME_MISMATCH");
+      if (!got || std::strcmp(nm, slots[i].want_name) != 0) klass_ok = false;
+    }
+    if (!klass_ok || !klass[0]) {
+      logf("[root] STOP: class name validation failed (wrong build or classes not initialized - be in menu/match). Send nzl_probe.txt.\n");
+    } else {
+      auto obj_klass = [&](uint64_t obj) -> uint64_t {
+        uint64_t k = 0; return (obj && read_ptr(obj, &k)) ? k : 0;
+      };
+      auto validate_game = [&](uint64_t cand, uint64_t* chain_out) -> bool {
+        uint64_t gm = 0, bm = 0, be = 0, we = 0, dict = 0, cam = 0;
+        if (!read_ptr(cand + 0xD8, &gm) || obj_klass(gm) != klass[1]) {
+          if (!read_ptr(cand + 0xD0, &gm) || obj_klass(gm) != klass[1]) return false;
+        }
+        if (!read_ptr(gm + 0x10, &bm) || obj_klass(bm) != klass[2]) return false;
+        if (!read_ptr(bm + 0x90, &be) || obj_klass(be) != klass[3]) return false;
+        if (!read_ptr(be + 0x60, &we) || obj_klass(we) != klass[4]) return false;
+        if (!read_ptr(we + 0x18, &dict) || !dict) return false;
+        if (!read_ptr(bm + 0x358, &cam) || obj_klass(cam) != klass[5]) return false;
+        chain_out[0] = gm; chain_out[1] = bm; chain_out[2] = be;
+        chain_out[3] = we; chain_out[4] = dict; chain_out[5] = cam;
+        return true;
+      };
+      logf("[root] heap scan for Game instance (klass=0x%llx) ...\n", (unsigned long long)klass[0]);
+      uint64_t addr = 0x10000, scanned = 0, found_game = 0;
+      uint64_t chain[6] = {};
+      ULONGLONG scan_t0 = GetTickCount64();
+      std::vector<unsigned char> buf(0x10000);
+      for (int i = 0; i < 16384 && addr < 0x0000800000000000ULL && !found_game; i++) {
+        NaRegion r{};
+        if (!NaQueryRegion((uint32_t)pid, addr, &r)) break;
+        uint64_t next = r.base + (r.size ? r.size : 0x1000);
+        if (next <= addr) break;
+        addr = next;
+        bool readable = (r.protect == 0x02 || r.protect == 0x04 || r.protect == 0x20 ||
+                         r.protect == 0x40 || r.protect == 0x80);
+        if (r.state != 0x1000 /*COMMIT*/ || r.type != 0x20000 /*MEM_PRIVATE*/ || !readable)
+          continue;
+        for (uint64_t off = 0; off < r.size && !found_game; off += 0x10000) {
+          uint64_t chunk = r.base + off;
+          uint32_t want = (uint32_t)((r.size - off) < 0x10000 ? (r.size - off) : 0x10000);
+          if (!NaRead((uint32_t)pid, chunk, want, buf.data())) continue;
+          scanned += want;
+          if ((scanned & 0x7FFFFFFULL) < want)
+            logf("[root] scanned %llu MiB +%llums\n", (unsigned long long)(scanned >> 20),
+                 (unsigned long long)(GetTickCount64() - scan_t0));
+          for (uint32_t o = 0; o + 8 <= want; o += 8) {
+            uint64_t v = 0; std::memcpy(&v, buf.data() + o, 8);
+            if (v != klass[0]) continue;
+            uint64_t cand = chunk + o, ch[6] = {};
+            logf("[root] Game-klass candidate @0x%llx (scanned %llu MiB) - validating chain...\n",
+                 (unsigned long long)cand, (unsigned long long)(scanned >> 20));
+            if (validate_game(cand, ch)) {
+              found_game = cand;
+              for (int k = 0; k < 6; k++) chain[k] = ch[k];
+              break;
+            }
+          }
+        }
+      }
+      if (found_game) {
+        float cp[3] = {}; NaRead((uint32_t)pid, chain[5] + 0x10, 12, cp);
+        int32_t dcount = 0; uint64_t dentries = 0;
+        read_ptr(chain[4] + 0x18, &dentries);
+        NaRead((uint32_t)pid, chain[4] + 0x20, 4, &dcount);
+        logf("[root] ROOT GAME FOUND @0x%llx GameModel=0x%llx BattleModel=0x%llx BattleEntities=0x%llx WorldEntities=0x%llx Dict=0x%llx (entries=0x%llx count=%d) CameraModel=0x%llx camPos=(%.2f,%.2f,%.2f) scan=%lluMiB %llums\n",
+             (unsigned long long)found_game, (unsigned long long)chain[0],
+             (unsigned long long)chain[1], (unsigned long long)chain[2],
+             (unsigned long long)chain[3], (unsigned long long)chain[4],
+             (unsigned long long)dentries, dcount, (unsigned long long)chain[5],
+             cp[0], cp[1], cp[2], (unsigned long long)(scanned >> 20),
+             (unsigned long long)(GetTickCount64() - scan_t0));
+        logf("[root] RESULT: ROOT_OK - validated Game chain live. Send nzl_probe.txt.\n");
+      } else {
+        logf("[root] RESULT: ROOT_NOT_FOUND scanned=%lluMiB %llums (Game object not in committed private heap, or not created yet - be in menu/match). Send nzl_probe.txt.\n",
+             (unsigned long long)(scanned >> 20), (unsigned long long)(GetTickCount64() - scan_t0));
+      }
+    }
+  }
   NaClose();
   if (g_log) std::fclose(g_log);
   return transport ? 0 : 5;

@@ -353,3 +353,18 @@
   TypeInfo slot. Root-finder must derive klass another way
   (MetadataRegistration parse / instance scan) and validate live via
   resolve_chain + class sanity. Do NOT hardcode a root RVA.
+
+## Root finder implemented in probe (2026-11-27)
+- TypeInfo slots EXIST for chain classes (script.json 26866884):
+  Game 0x81B7710, GameModel 0x81B86D8, BattleModel 0x82496E8,
+  BattleEntitiesModel 0x8245928, WorldEntitiesModel 0x82295C8,
+  BattleCameraModel 0x823C210, BattleCharacterModel 0x823FFD0.
+- Probe after TRANSPORT_OK: reads each klass*, verifies Il2CppClass
+  name @+0x10 == expected, heap-scans MEM_PRIVATE/COMMIT/readable
+  regions in 64KB NaRead chunks for qword==Game klass, validates the
+  full chain by class pointers (GameModel 0xD8->alt 0xD0, +0x10, +0x90,
+  +0x60, +0x18 dict, camera +0x358), logs ROOT GAME FOUND + dict
+  entries/count + camera pos. UnityEntry bypassed entirely.
+- Unverified live; scan speed ~64KB/16ms worst case - watch scanned
+  MiB progress in log. Next: owner pull/build, game in menu/match,
+  NZL-Probe, send nzl_probe.txt with [root] lines.
