@@ -127,3 +127,9 @@
 
 ## Скрипт загрузки драйвера (2026-11-27)
 - `tools/NZL-LoadDriver.ps1` (админ): проверки admin/driver.sys/kdmapper/игра выключена, инфо SecureBoot+HVCI, kdmapper, проверка HKLM\SYSTEM\NaCoreFilter, вердикт TRANSPORT_LOADED. Порядок: pull -> BuildAll -> LoadDriver -> игра Steam -> nzl_probe.exe -> nzl_probe.txt мне.
+
+## Блокер сборки драйвера (2026-11-27, лог владельца)
+- driver_build.log: `No Windows SDK with WDK kernel headers [km\ntddk.h]`. У владельца SDK 10.0.26100 (user-mode) есть, WDK нет.
+- Все user-mode exe собрались на его MSVC 19.51: nzl_core.lib, nzl_probe.exe, nzl_studio.exe, тесты.
+- `tools/NZL-InstallWdk.ps1`: winget Microsoft.WindowsWDK.10.0.26100 + проверка ntddk.h + ручной fallback (learn.microsoft.com WDK / VS Installer Individual components).
+- После WDK: BuildAll -> driver.sys -> NZL-LoadDriver -> игра -> probe.
