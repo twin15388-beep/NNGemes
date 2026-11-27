@@ -53,8 +53,34 @@ int main(int argc, char** argv) {
   if (!pid) pid = find_pid(proc);
   if (!pid) { logf("[probe] game process 'ROB RUN.exe' not found. Start the game (normal Steam launch), get into the menu/match, run probe again.\n"); if (g_log) std::fclose(g_log); return 2; }
   logf("[probe] pid=%lu\n", pid);
+  // Stage diagnostics: separate registry / section / mapping failures.
+  {
+    HKEY hk = nullptr;
+    LONG ro = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\NaCoreFilter", 0, KEY_READ, &hk);
+    if (ro != ERROR_SUCCESS) {
+      logf("[probe] registry HKLM\\SYSTEM\\NaCoreFilter OPEN FAILED win32=%ld. Driver not loaded in THIS Windows session (volatile key dies on reboot: reload driver, do not reboot between load and probe).\n", ro);
+      if (g_log) std::fclose(g_log); return 4;
+    }
+    DWORD kv = 0, type = 0, sz = sizeof(kv);
+    RegQueryValueExW(hk, L"Key", nullptr, &type, (BYTE*)&kv, &sz);
+    WCHAR shm[16] = {}; sz = sizeof(shm);
+    RegQueryValueExW(hk, L"Shm", nullptr, &type, (BYTE*)shm, &sz);
+    RegCloseKey(hk);
+    logf("[probe] registry Key=%lu Shm=%ls\n", kv, shm);
+    if (!kv || !shm[0]) { logf("[probe] registry values empty -> driver startup incomplete. Reload driver.\n"); if (g_log) std::fclose(g_log); return 4; }
+    WCHAR full[32]; swprintf_s(full, L"Global\\%s", shm);
+    HANDLE hm = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, full);
+    if (!hm) {
+      DWORD e = GetLastError();
+      logf("[probe] OpenFileMapping(%ls) FAILED win32=%lu. %s\n", full, e,
+           e == ERROR_ACCESS_DENIED ? "ACCESS DENIED: run nzl_probe.exe as ADMINISTRATOR (probe and driver must match privilege)." : "Section missing: driver worker died or wrong Windows session.");
+      if (g_log) std::fclose(g_log); return 4;
+    }
+    CloseHandle(hm);
+    logf("[probe] section open OK (%ls)\n", full);
+  }
   if (!NaInit()) {
-    logf("[probe] DRIVER NOT LOADED: HKLM\\SYSTEM\\NaCoreFilter missing/Key empty. Load driver.sys via kdmapper (admin) BEFORE starting the game, then rerun.\n");
+    logf("[probe] NaInit FAILED after section check. Send me nzl_probe.txt.\n");
     if (g_log) std::fclose(g_log); return 4;
   }
   logf("[probe] NaInit OK (sharedmem transport alive)\n");
