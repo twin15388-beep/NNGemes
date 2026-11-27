@@ -215,3 +215,9 @@
 - Интерпретация: первичное исключение в вручную замапленном образе (нет зарегистрированной unwind-информации kdmapper-образа), при его обработке обработчик лёг повторно -> double fault. Точную функцию triage не даёт (kernel dump не был включён: SetKernelDump владелец пропустил, analyze снова triage).
 - Решение: NA_CMD_MODULE (добавлена после успешного TRANSPORT_OK) УДАЛЕНА из драйвера — откат к составу команд успешной сборки. Поиск GameAssembly/UnityPlayer перенесён в клиент probe: скан MEM_IMAGE регионов через NaQueryRegion + чтение PE export name через NaRead (новых ядерных путей нет).
 - Драйвер НЕ загружать до отдельного решения владельца с полным пониманием риска. Два BSOD подряд на kdmapper-транспорте зафиксированы.
+
+## Продолжаем после BSOD #2 (решение владельца, 2026-11-27)
+- Владелец: продолжаем, ошибки решаем. Протокол усилен.
+- NZL-LoadDriver: предохранитель — без CrashDumpEnabled=2 загрузка запрещена (exit 9). Сначала NZL-SetKernelDump + Restart-Computer.
+- Драйвер = откаченный состав (без NA_CMD_MODULE), поиск модулей — клиентский region-scan в probe.
+- Шаги: SetKernelDump -> reboot -> git pull -> BuildAll -> LoadDriver (один раз) -> игра/матч -> NZL-Probe (админ) -> nzl_probe.txt с region-scan базами.

@@ -55,6 +55,15 @@ if ($Kdmapper -eq "" -or -not (Test-Path $Kdmapper)) {
 }
 Write-Nzl "kdmapper: $Kdmapper"
 
+# --- Предохранитель после двух BSOD: нужен kernel dump для настоящего стека ---
+$cd = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl" -ErrorAction SilentlyContinue).CrashDumpEnabled
+if ($cd -ne 2) {
+    Write-Nzl "FAIL: CrashDumpEnabled=$cd, нужен 2 (kernel dump). Без него третий краш опять даст пустой стек."
+    Write-Nzl "Выполни: powershell -ExecutionPolicy Bypass -File tools\NZL-SetKernelDump.ps1, затем Restart-Computer, и только потом загрузка драйвера."
+    exit 9
+}
+Write-Nzl "Kernel dump включён (CrashDumpEnabled=2): OK"
+
 # --- Защита от двойной загрузки в одной сессии ---
 if (Test-Path "HKLM:\SYSTEM\NaCoreFilter") {
     $old = Get-ItemProperty "HKLM:\SYSTEM\NaCoreFilter" -ErrorAction SilentlyContinue
