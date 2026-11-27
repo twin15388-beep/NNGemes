@@ -270,6 +270,49 @@ static std::vector<CarEnt> snapshot_cars(Ctx& c, const nzl::Vec3f& local) {
   }
   return out;
 }
+// Settings persistence: nzl_settings.ini next to the exe, written on
+// every menu change, read at startup.
+static std::string settings_path() {
+  char exe[MAX_PATH] = {};
+  GetModuleFileNameA(nullptr, exe, MAX_PATH);
+  std::string p = exe;
+  size_t slash = p.find_last_of("\\/");
+  return (slash == std::string::npos ? std::string("nzl_settings.ini") : p.substr(0, slash + 1) + "nzl_settings.ini");
+}
+static void save_settings(Ctx& c) {
+  FILE* f = std::fopen(settings_path().c_str(), "w");
+  if (!f) return;
+  std::fprintf(f, "fov=%.1f\nmax_dist=%.1f\nradar_range=%.1f\naim_fov=%.1f\naim_smooth=%.1f\n",
+               c.fov, c.max_dist, c.radar_range, c.aim_fov, c.aim_smooth);
+  std::fprintf(f, "show_dead=%d\nboxes=%d\nskeleton=%d\nlabels=%d\nhp=%d\narmor=%d\nroles=%d\nloot=%d\ncars=%d\nradar=%d\ntracers=%d\naim=%d\nbasis_quat=%d\nvisible_only=%d\naim_bone=%d\naim_key=%d\nmenu_key=%d\n",
+               c.show_dead, c.show_boxes, c.show_skeleton, c.show_text, c.show_hp, c.show_armor,
+               c.show_roles, c.show_loot, c.show_cars, c.show_radar, c.tracers, c.aim,
+               c.basis_quat, c.visible_only, c.aim_bone, c.aim_key, c.menu_key);
+  std::fclose(f);
+}
+static void load_settings(Ctx& c) {
+  FILE* f = std::fopen(settings_path().c_str(), "r");
+  if (!f) return;
+  char line[128];
+  while (std::fgets(line, sizeof(line), f)) {
+    char key[64]; double val;
+    if (std::sscanf(line, "%63[^=]=%lf", key, &val) != 2) continue;
+    std::string k = key;
+    if (k == "fov") c.fov = (float)val; else if (k == "max_dist") c.max_dist = (float)val;
+    else if (k == "radar_range") c.radar_range = (float)val; else if (k == "aim_fov") c.aim_fov = (float)val;
+    else if (k == "aim_smooth") c.aim_smooth = (float)val;
+    else if (k == "show_dead") c.show_dead = val != 0; else if (k == "boxes") c.show_boxes = val != 0;
+    else if (k == "skeleton") c.show_skeleton = val != 0; else if (k == "labels") c.show_text = val != 0;
+    else if (k == "hp") c.show_hp = val != 0; else if (k == "armor") c.show_armor = val != 0;
+    else if (k == "roles") c.show_roles = val != 0; else if (k == "loot") c.show_loot = val != 0;
+    else if (k == "cars") c.show_cars = val != 0; else if (k == "radar") c.show_radar = val != 0;
+    else if (k == "tracers") c.tracers = val != 0; else if (k == "aim") c.aim = val != 0;
+    else if (k == "basis_quat") c.basis_quat = val != 0; else if (k == "visible_only") c.visible_only = val != 0;
+    else if (k == "aim_bone") c.aim_bone = (int)val % 3; else if (k == "aim_key") c.aim_key = (int)val % 4;
+    else if (k == "menu_key") c.menu_key = (int)val % 4;
+  }
+  std::fclose(f);
+}
 static HWND g_game_wnd = nullptr;
 static BOOL CALLBACK enum_wnd(HWND h, LPARAM lp) {
   DWORD wpid = 0; GetWindowThreadProcessId(h, &wpid);
@@ -361,6 +404,13 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
           char t[64]; std::snprintf(t, sizeof(t), "car %.0fm", l.dist);
           TextOutA(dc, (int)l.sx + 8, (int)l.sy - 7, t, (int)std::strlen(t));
         }
+      }
+      if (g_ctx->aim) {
+        SelectObject(dc, thin);
+        HGDIOBJ oldb2 = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+        int acx = g_ctx->width / 2, acy = g_ctx->height / 2, ar = (int)g_ctx->aim_fov;
+        Ellipse(dc, acx - ar, acy - ar, acx + ar, acy + ar);
+        SelectObject(dc, oldb2);
       }
       if (g_ctx->show_loot) {
         SelectObject(dc, thin);
@@ -507,6 +557,7 @@ int main() {
   }
   if (!game_obj) { std::printf("[NZL] Game not found. Be in a match.\n"); return 7; }
   Ctx ctx; ctx.pid = pid; ctx.mem = &mem; ctx.off = off;
+  load_settings(ctx);
   ctx.chain = nzl::resolve_chain_from_game(mem, game_obj, off);
   if (!ctx.chain.ok) { std::printf("[NZL] chain FAILED at %s\n", ctx.chain.stage.c_str()); return 8; }
   std::printf("[NZL] chain OK. Overlay live. INSERT opens settings.\n");
@@ -562,6 +613,7 @@ int main() {
           case 20: ctx.visible_only = !ctx.visible_only; break;
           case 21: ctx.menu_key = (ctx.menu_key + (right ? 1 : 3)) % 4; break;
         }
+        save_settings(ctx);
         InvalidateRect(ov, nullptr, FALSE);
       }
     }

@@ -497,3 +497,12 @@
   prompt game, overlay) + tools/NZL-Package.ps1 -> NZL-Studio-Package
   .zip with exes/driver.sys/kdmapper.exe/tools/NZL-START.bat, no
   VS/WDK needed on recipient PC.
+
+## Settings persist + aim FOV circle + Dropbox kit (2026-11-27)
+- Overlay: settings save/load nzl_settings.ini next to exe (all menu
+  values incl. binds/bone), aim FOV circle drawn when aim enabled.
+- Ready-binary zip can only be produced on the owner's Windows box
+  (MSVC+WDK) via tools/NZL-Package.ps1; sandbox uploads the full
+  source kit (repo snapshot with NZL-START.bat + tools) to Dropbox
+  for download. Feature set now standard (except instant loot pickup,
+  explicitly excluded by owner).
