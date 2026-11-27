@@ -203,3 +203,8 @@
 - kdmapper.exe пропал из nzl/driver (не в git; вероятно, антивирус/очистка). Лечение: tools\NZL-GetKdmapper.ps1 (собирает из D:\kdmapper-src, теперь находит kdmapper_Release.exe).
 - Il2CppDumper владелец так и не скачал. `tools/NZL-GetDumper.ps1`: GitHub API latest release Perfares, net6-win zip -> C:\Il2CppDumper. Затем NZL-Dump.ps1.
 - Драйвер с NA_CMD_MODULE собран (15872, BUILD_OK), но не загружен из-за kdmapper.
+
+## BSOD #2 (2026-11-27) — СТОП
+- Владелец сообщил: крашнулось так же (стадия не уточнена). Драйвер НЕ загружать.
+- NZL-AnalyzeDump предпочитает C:\Windows\MEMORY.DMP (kernel dump) — нужен настоящий стек.
+- Нужно: NZL-CrashInfo.ps1 + NZL-AnalyzeDump.ps1 -> analyze.txt + на каком шаге упало.

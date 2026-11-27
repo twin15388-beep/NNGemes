@@ -31,8 +31,12 @@ Write-Nzl "cdb: $cdb"
 
 # --- дамп ---
 if ($Dump -eq "") {
-    $cand = Get-ChildItem (Join-Path $root "crash_info") -Filter "*.dmp" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($cand) { $Dump = $cand.FullName }
+    # Kernel dump first: triage minidump gave ZEROED_STACK last time.
+    if (Test-Path "C:\Windows\MEMORY.DMP") { $Dump = "C:\Windows\MEMORY.DMP" }
+    else {
+        $cand = Get-ChildItem (Join-Path $root "crash_info") -Filter "*.dmp" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($cand) { $Dump = $cand.FullName }
+    }
 }
 if ($Dump -eq "" -or -not (Test-Path $Dump)) {
     $cand = Get-ChildItem "C:\Windows\Minidump" -Filter "*.dmp" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
