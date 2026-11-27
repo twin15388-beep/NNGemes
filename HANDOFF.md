@@ -103,3 +103,13 @@
 - NZL интеграция: клиент скопирован с одним патчем — timeout 2000 ms в Send() + nullptr-guard во всех Na* (оригинал висел вечно при смерти драйвера). `nzl/include/nzl/driver_memory.h` + `src/driver_memory_windows.cpp` — DriverMemory : IMemory (NaRead). main_windows: pid -> DriverMemory.init (транспорт), base/PEB, пробное чтение GameAssembly; корень ESP по-прежнему стоп до живого дампа (честно, return 3).
 - Сборка в песочнице: cmake configure/build exit 0, nzl_tests PASSED. Драйвер (WDK/MSVC) и Windows-клиент здесь НЕ собирались — нет WDK/Windows.
 - Ветка для загрузки драйвером: build_driver.bat (MSVC+WDK 10.0.26100) -> driver.sys, загрузка kdmapper от админа; build_driver.bat локализован (убран копир в ..\1_run чужих сборок).
+
+## Fingerprint билда владельца (2026-11-27, NZL-Collect)
+- PC: DESKTOP-YLOFIS1, Win11 Pro, игра `D:\tools\steamapps\common\Rob Run`.
+- Unity 6000.3.18.6209205 (ROB RUN.exe и UnityPlayer.dll file_version).
+- GameAssembly.dll 148323840, SHA256 2dc3326915eb1e62e86dee32d9fd64f8020623f6220de747272cd7ade767b5cf
+- global-metadata.dat 34498620, SHA256 96a860618aa0a6c5df88450d2906310e52b8f7980d210675a643fd429451a62e
+- ROB RUN.exe 677432, SHA 172aff59712df57fc03a7169051df77d832dbadd7ee508d0f6d20314b2207cc2
+- UnityPlayer.dll 36529064, SHA e702f4b9763e3b1e095ef1c4fc2da6625dd6340475398838be4357648cad2544
+- EAC: EasyAntiCheat_EOS_Setup.exe + Settings.json + Certificates, start_protected_game=true, sentry/crashpad=true.
+- ВАЖНО: SHA GameAssembly НЕ совпадает со старым S1 (03003754...) — все старые офсеты к этому билду НЕ применять до Il2CppDumper по новым файлам.
