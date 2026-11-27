@@ -8,16 +8,19 @@ NZL Studio - скачать Il2CppDumper (Perfare) с GitHub в C:\Il2CppDumper.
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 function Write-Nzl([string]$m) { Write-Host "[NZL] $m" -ForegroundColor Magenta }
 $dst = "C:\Il2CppDumper"
-# A modern .NET build (net6/net7/net8) leaves Il2CppDumper.runtimeconfig.json
-# next to the exe and dies with "You must install or update .NET" on machines
-# without that runtime (observed live). The net472 build runs on the .NET
-# Framework 4.8 shipped with Windows 11 - prefer it, replace a net6 copy.
+# A modern .NET build (net6/net7/net8) dies with "You must install or
+# update .NET" on machines without that runtime (observed live, twice -
+# the runtimeconfig.json marker was NOT present next to this copy, so do
+# not rely on it). Hard marker of the .NET Framework build, which runs on
+# the Framework 4.8 shipped with Windows 11: Il2CppDumper.exe.config.
+# Anything else in C:\Il2CppDumper is replaced wholesale below.
 if ((Test-Path (Join-Path $dst "Il2CppDumper.exe")) -and
-    -not (Test-Path (Join-Path $dst "Il2CppDumper.runtimeconfig.json"))) {
-    Write-Nzl "Il2CppDumper уже на месте: $dst\Il2CppDumper.exe"; exit 0
+    (Test-Path (Join-Path $dst "Il2CppDumper.exe.config"))) {
+    Write-Nzl "Il2CppDumper (framework build) уже на месте: $dst\Il2CppDumper.exe"; exit 0
 }
-if (Test-Path (Join-Path $dst "Il2CppDumper.runtimeconfig.json")) {
-    Write-Nzl "Найдена .NET (net6+) сборка дампера - заменяю на net472, чтобы не ставить runtime."
+if (Test-Path (Join-Path $dst "Il2CppDumper.exe")) {
+    Write-Nzl "Найдена не-framework сборка дампера - полностью заменяю папку $dst."
+    Remove-Item $dst -Recurse -Force
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 try {

@@ -313,3 +313,12 @@
   NZL-GetDumper now replaces a runtimeconfig (net6+) copy and prefers
   the non-net win asset (runs on Win11 .NET Framework 4.8).
 - Next: owner reruns GetDumper -> Dump -> sends nzl_dump.zip (offsets).
+
+## GetDumper detect v1 failed (2026-11-27)
+- Owner rerun: still "already in place", Dump still net6 runtime error.
+  The net6 copy has NO Il2CppDumper.runtimeconfig.json next to exe, so
+  that marker lied. v2: framework marker = Il2CppDumper.exe.config;
+  anything else -> whole C:\Il2CppDumper deleted and re-downloaded
+  (framework Il2CppDumper-win asset). Sandbox cannot fetch the release
+  zip (redirect host blocked) - .exe.config marker is the standard
+  net472 layout; worst case GetDumper re-downloads each run, Dump works.
