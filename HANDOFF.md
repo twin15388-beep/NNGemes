@@ -514,3 +514,12 @@
   %LOCALAPPDATA%\NZL-Studio (settings persist), kdmapper load
   (skipped if HKLM\SYSTEM\NaCoreFilter present; refuses if game
   already running), prompt game, overlay. No zip/folders/VS needed.
+
+## Auto-wait / Steam launch in one-file launcher (2026-11-27)
+- After driver verification, NZL-Studio.bat offers: (1) launch ROB RUN
+  via steam://rungameid/4262460, or (2) wait for a manual launch.
+  It polls ROB RUN.exe every 2s, waits 10s after detection, rechecks,
+  then launches nzl_overlay.exe without requiring a keypress. Ctrl+C
+  cancels while waiting. Driver load remains before game; if game was
+  already running without a loaded driver, launcher still blocks and
+  asks to close/restart (avoids loading the driver late).

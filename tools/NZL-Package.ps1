@@ -65,12 +65,32 @@ if %errorlevel% neq 0 (
 echo [NZL] Driver loaded OK.
 :game
 echo.
-echo [NZL] NOW launch ROB RUN via Steam and enter a match,
-echo [NZL] then press any key here to start the overlay.
-pause >nul
-echo [NZL] Overlay starting (INSERT = menu, END = exit)...
+echo [NZL] Choose how to start ROB RUN:
+echo [1] Launch it now through Steam (AppID 4262460)
+echo [2] I will launch it manually; keep waiting
+choice /C 12 /N /M "Select 1 or 2: "
+if errorlevel 2 goto waitgame
+echo [NZL] Opening ROB RUN through Steam...
+start "" "steam://rungameid/4262460"
+:waitgame
+echo [NZL] Waiting for ROB RUN.exe. No key press needed; Ctrl+C cancels.
+:waitgame_loop
+tasklist /FI "IMAGENAME eq ROB RUN.exe" /NH | find /I "ROB RUN.exe" >nul
+if errorlevel 1 (
+    timeout /t 2 /nobreak >nul
+    goto waitgame_loop
+)
+echo [NZL] Game process detected; waiting 10 seconds for startup...
+timeout /t 10 /nobreak >nul
+tasklist /FI "IMAGENAME eq ROB RUN.exe" /NH | find /I "ROB RUN.exe" >nul
+if errorlevel 1 goto waitgame_loop
+echo [NZL] Starting overlay automatically (INSERT = menu, END = exit)...
 "%NZLDIR%\nzl_overlay.exe"
-pause
+if errorlevel 1 (
+    echo [NZL] Overlay exited with errorlevel %errorlevel%.
+    echo [NZL] If you were not yet in a match, enter one and run this file again.
+    pause
+)
 goto :eof
 __PAYLOAD__
 '@
@@ -86,5 +106,5 @@ foreach ($name in @("driver.sys", "kdmapper.exe", "nzl_overlay.exe")) {
 $out = Join-Path $root "NZL-Studio.bat"
 [IO.File]::WriteAllText($out, $template.Replace("__PAYLOAD__", $payload), [Text.Encoding]::ASCII)
 Write-Nzl "ONE FILE ready: $out ($([math]::Round((Get-Item $out).Length/1MB,2)) MB)"
-Write-Nzl "Send ONLY this .bat. Recipient: double-click, admin prompt, launch game when told, INSERT = menu."
+Write-Nzl "Send ONLY this .bat. Recipient: double-click, admin prompt, choose Steam launch or manual wait; overlay starts automatically when ROB RUN opens."
 exit 0
