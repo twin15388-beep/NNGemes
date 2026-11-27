@@ -3,11 +3,6 @@
 
 #define POOL_TAG 'aNcs'
 
-typedef BOOLEAN (NTAPI *FN_RtlAddFunctionTable)(PVOID, ULONG, ULONG64);
-#ifndef RUNTIME_FUNCTION
-typedef struct _RUNTIME_FUNCTION { ULONG BeginAddress; ULONG EndAddress; ULONG UnwindData; } RUNTIME_FUNCTION, *PRUNTIME_FUNCTION;
-#endif
-
 NTSYSAPI PVOID NTAPI PsGetProcessPeb(PEPROCESS);
 
 static ULONG           g_key;
@@ -49,55 +44,35 @@ static PSECURITY_DESCRIPTOR NaSectionSecurity(void)
     st = RtlSetDaclSecurityDescriptor(&g_section_sd, TRUE, acl, FALSE);
     g_dbg_dacl = st;
     if (!NT_SUCCESS(st)) return NULL;
-    return &g_section_sd;
+    // Object manager wants a self-relative SD.
+    static UCHAR selfRel[1024];
+    ULONG srLen = sizeof(selfRel);
+    st = RtlAbsoluteToSelfRelativeSD(&g_section_sd, (PSECURITY_DESCRIPTOR)selfRel, &srLen);
+    g_dbg_dacl = st;
+    if (!NT_SUCCESS(st)) return NULL;
+    return (PSECURITY_DESCRIPTOR)selfRel;
 }
 static PVOID           g_shm_kernel;
 static HANDLE          g_shm_handle;
 static HANDLE          g_worker_thread;
 
-static PVOID NaImageBase(void)
-{
-    PUCHAR p = (PUCHAR)(ULONG_PTR)NaImageBase;
-    p = (PUCHAR)((ULONG_PTR)p & ~0xFFFULL);
-    for (ULONG i = 0; i < 0x10000; i += 0x1000, p -= 0x1000) {
-        if (!MmIsAddressValid(p))
-            break;
-        if (*(USHORT*)p == 0x5A4D)
-            return p;
-    }
-    return NULL;
-}
-
-static VOID NaRegisterExcTable(PVOID base)
-{
-    if (!base) return;
-    PUCHAR nt = (PUCHAR)base + *(ULONG*)((PUCHAR)base + 0x3C);
-    ULONG rva = *(ULONG*)(nt + 160);
-    ULONG rsz = *(ULONG*)(nt + 164);
-    if (!rva || !rsz) return;
-    UNICODE_STRING name;
-    RtlInitUnicodeString(&name, L"RtlAddFunctionTable");
-    FN_RtlAddFunctionTable fn = (FN_RtlAddFunctionTable)MmGetSystemRoutineAddress(&name);
-    if (fn) fn((PUCHAR)base + rva, rsz / sizeof(RUNTIME_FUNCTION), (ULONG64)base);
-}
+// MmCopyVirtualMemory handles bad user addresses internally and returns
+// NTSTATUS - no KeStackAttachProcess, no ProbeFor*, no __try/__except and
+// therefore no reliance on manually registered unwind tables (kdmapper).
+NTSYSAPI NTSTATUS NTAPI MmCopyVirtualMemory(PEPROCESS SourceProcess, PVOID SourceAddress,
+    PEPROCESS TargetProcess, PVOID TargetAddress, SIZE_T BufferSize,
+    KPROCESSOR_MODE PreviousMode, PSIZE_T ReturnSize);
 
 static NTSTATUS NaRead(ULONG pid, ULONGLONG addr, ULONG sz, PVOID out)
 {
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
-    KAPC_STATE apc;
-    KeStackAttachProcess(proc, &apc);
-    __try {
-        ProbeForRead((PVOID)(ULONG_PTR)addr, sz, 1);
-        RtlCopyMemory(out, (PVOID)(ULONG_PTR)addr, sz);
-        st = STATUS_SUCCESS;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        st = GetExceptionCode();
-    }
-    KeUnstackDetachProcess(&apc);
+    SIZE_T copied = 0;
+    st = MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)addr, PsGetCurrentProcess(),
+                             out, sz, KernelMode, &copied);
     ObDereferenceObject(proc);
-    return st;
+    return (NT_SUCCESS(st) && copied == sz) ? STATUS_SUCCESS : (NT_SUCCESS(st) ? STATUS_PARTIAL_COPY : st);
 }
 
 static NTSTATUS NaWrite(ULONG pid, ULONGLONG addr, ULONG sz, PVOID in)
@@ -105,18 +80,11 @@ static NTSTATUS NaWrite(ULONG pid, ULONGLONG addr, ULONG sz, PVOID in)
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
-    KAPC_STATE apc;
-    KeStackAttachProcess(proc, &apc);
-    __try {
-        ProbeForWrite((PVOID)(ULONG_PTR)addr, sz, 1);
-        RtlCopyMemory((PVOID)(ULONG_PTR)addr, in, sz);
-        st = STATUS_SUCCESS;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        st = GetExceptionCode();
-    }
-    KeUnstackDetachProcess(&apc);
+    SIZE_T copied = 0;
+    st = MmCopyVirtualMemory(PsGetCurrentProcess(), in, proc,
+                             (PVOID)(ULONG_PTR)addr, sz, KernelMode, &copied);
     ObDereferenceObject(proc);
-    return st;
+    return (NT_SUCCESS(st) && copied == sz) ? STATUS_SUCCESS : (NT_SUCCESS(st) ? STATUS_PARTIAL_COPY : st);
 }
 
 static NTSTATUS NaBase(ULONG pid, PULONGLONG out)
@@ -124,16 +92,15 @@ static NTSTATUS NaBase(ULONG pid, PULONGLONG out)
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
-    KAPC_STATE apc;
-    KeStackAttachProcess(proc, &apc);
-    __try {
-        PUCHAR peb = (PUCHAR)PsGetProcessPeb(proc);
-        *out = *(ULONGLONG*)(peb + 0x10); /* ImageBaseAddress */
-        st = STATUS_SUCCESS;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        st = GetExceptionCode();
-    }
-    KeUnstackDetachProcess(&apc);
+    PUCHAR peb = (PUCHAR)PsGetProcessPeb(proc);
+    ULONGLONG val = 0;
+    if (peb) {
+        SIZE_T copied = 0;
+        st = MmCopyVirtualMemory(proc, peb + 0x10, PsGetCurrentProcess(),
+                                 &val, sizeof(val), KernelMode, &copied);
+        if (NT_SUCCESS(st) && copied == sizeof(val)) *out = val;
+        else if (NT_SUCCESS(st)) st = STATUS_PARTIAL_COPY;
+    } else st = STATUS_INVALID_PARAMETER;
     ObDereferenceObject(proc);
     return st;
 }
@@ -193,29 +160,21 @@ static NTSTATUS NaBatch(PNA_SHM shm)
     if (!shm->count || shm->count > NA_BATCH_MAX ||
         !shm->total || shm->total > NA_MAX_XFER)
         return STATUS_INVALID_PARAMETER;
-
     PVOID tmp = ExAllocatePoolWithTag(NonPagedPool, shm->total, POOL_TAG);
     if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
-
+    RtlZeroMemory(tmp, shm->total);
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)shm->pid, &proc);
     if (!NT_SUCCESS(st)) { ExFreePoolWithTag(tmp, POOL_TAG); return st; }
-
-    KAPC_STATE apc;
-    KeStackAttachProcess(proc, &apc);
     for (ULONG i = 0; i < shm->count; i++) {
         PNA_ITEM it = &shm->items[i];
         if (!it->size || (ULONGLONG)it->offset + it->size > shm->total) continue;
-        __try {
-            ProbeForRead((PVOID)(ULONG_PTR)it->address, it->size, 1);
-            RtlCopyMemory((PUCHAR)tmp + it->offset, (PVOID)(ULONG_PTR)it->address, it->size);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            RtlZeroMemory((PUCHAR)tmp + it->offset, it->size);
-        }
+        SIZE_T copied = 0;
+        MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)it->address, PsGetCurrentProcess(),
+                            (PUCHAR)tmp + it->offset, it->size, KernelMode, &copied);
+        // failed items stay zeroed (matches previous behaviour)
     }
-    KeUnstackDetachProcess(&apc);
     ObDereferenceObject(proc);
-
     RtlCopyMemory(shm->data, tmp, shm->total);
     ExFreePoolWithTag(tmp, POOL_TAG);
     return STATUS_SUCCESS;
@@ -393,8 +352,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
 {
     UNREFERENCED_PARAMETER(drv);
     UNREFERENCED_PARAMETER(reg);
-    PVOID base = NaImageBase();
-    NaRegisterExcTable(base);
     OBJECT_ATTRIBUTES oa;
     InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
     HANDLE hThread;

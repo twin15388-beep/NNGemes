@@ -174,3 +174,9 @@
 - /112726-11109-01.dmp 196096, PAGEDU64. DUMP_HEADER64: BugCheckCode@0x38=0x1e, p1=c0000005, p2(адрес исключения)=ffffe10d94df2f54, p3=1 (ЗАПИСЬ), p4=0000020718900454 (дикий адрес записи).
 - Вывод: ядро писало по повреждённому указателю из драйвера в диапазоне ручного мапа. Кто именно — по стеку из !analyze.
 - `tools/NZL-AnalyzeDump.ps1`: cdb.exe из WDK Debuggers (у владельца D:\Windows Kits\10\Debuggers\x64\cdb.exe), !analyze -v;.ecxr;kv;lm -> crash_info\analyze.txt. Жду файл.
+
+## Анализ дампа + харднинг драйвера (2026-11-27)
+- analyze.txt: KMODE_EXCEPTION_NOT_HANDLED, Failure.Bucket=ZEROED_STACK_AV, STACK_TEXT только KeBugCheckEx, MODULE=Unknown_Module, ANALYSIS_INCONCLUSIVE, PROCESS=ROB RUN.exe. Адрес исключения ffffe10d94df2f54 не входит ни в один загруженный модуль (ручной мап kdmapper в списке модулей отсутствует). Стек нулевой — функцию-виновника дамп не называет. EAC-модуль в списке есть (fffff807 47050000-496b3000).
+- Честный вывод: виновник — вручную замапленный образ (наш драйвер — главный кандидат, kdmapper-цепочка не исключена), точная строка неизвестна.
+- Харднинг sc_drv.c (НЕ загружать без пересборки и моего слова): удалены NaImageBase/RtlAddFunctionTable (скан MZ по памяти + ручная регистрация unwind — при kdmapper это кандидат на "exception not handled"), удалены KeStackAttach+ProbeFor+__try во read/write/base/batch — заменены на MmCopyVirtualMemory (возвращает NTSTATUS, SEH не нужен), SD секции теперь self-relative (RtlAbsoluteToSelfRelativeSD).
+- Текущий загруженный ранее бинарь после перезагрузки отсутствует. Новый бинарь не собран у владельца.
