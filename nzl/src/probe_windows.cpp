@@ -293,16 +293,23 @@ int main(int argc, char** argv) {
   }
 
   if (profile_identity_ok) {
+    // NOTE: the name *string* pointer is not alignment-checked. IL2CPP
+    // interns class and namespace names in a byte pool, so it is routinely
+    // unaligned - the owner's live run produced 0x1F18D039A06 pointing at
+    // "Game" while plausible_ptr() (which demands 8-byte alignment) rejected
+    // it and reported NAME_MISMATCH on a correct profile RVA. na_klass_is()
+    // only requires a readable user-range address.
+    const auto klass_read_cb = [](void* ctx, NA_U64 va, void* out, NA_U32 size) -> int {
+      return static_cast<decltype(mem)*>(ctx)->read(va, out, size) ? 1 : 0;
+    };
     auto class_name_matches = [&](uint64_t class_pointer,
                                   std::string_view expected) -> bool {
       if (!nzl::plausible_ptr(class_pointer) ||
           class_pointer > UINT64_MAX - offsets.il2cpp_class_name) return false;
-      const auto name_pointer = mem.ptr(class_pointer + offsets.il2cpp_class_name);
-      if (!name_pointer || !nzl::plausible_ptr(*name_pointer)) return false;
-      char actual[96]{};
-      if (!mem.read(*name_pointer, actual, sizeof(actual) - 1)) return false;
-      actual[sizeof(actual) - 1] = '\0';
-      return std::string_view(actual) == expected;
+      const std::string wanted(expected);
+      return na_klass_is(klass_read_cb, const_cast<void*>(static_cast<const void*>(&mem)),
+                         class_pointer, static_cast<NA_U32>(offsets.il2cpp_class_name),
+                         wanted.c_str()) != 0;
     };
 
     // ---- why a TypeInfo check failed ---------------------------------
@@ -313,9 +320,7 @@ int main(int argc, char** argv) {
     // the slot really leads to, and sweep a bounded window around the claimed
     // RVA with the tested na_klass.h logic.
     void* read_ctx = const_cast<void*>(static_cast<const void*>(&mem));
-    const auto klass_read = [](void* ctx, NA_U64 va, void* out, NA_U32 size) -> int {
-      return static_cast<decltype(mem)*>(ctx)->read(va, out, size) ? 1 : 0;
-    };
+    const auto& klass_read = klass_read_cb;
     const auto explain_type_slot = [&](size_t index, const auto& slot) {
       const NA_U32 name_off = static_cast<NA_U32>(offsets.il2cpp_class_name);
       logf("[klass] slot=%.*s rva=0x%llX klass=0x%llX plausible=%s\n",

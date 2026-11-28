@@ -31,6 +31,7 @@
 #include <unordered_map>
 #include <windowsx.h>
 #include "nzl/chain.h"
+#include "nzl/na_klass.h"
 #include "nzl/driver_memory.h"
 #include "nzl/esp_pipeline.h"
 #include "nzl/skeleton.h"
@@ -71,16 +72,27 @@ static uint64_t find_gameassembly(DWORD pid) {
   }
   return 0;
 }
+// The name STRING pointer must not be alignment-checked. IL2CPP interns class
+// and namespace names in a byte pool, so name pointers are routinely
+// unaligned: the owner's live run gave 0x1F18D039A06 pointing at "Game".
+// plausible_ptr() demands 8-byte alignment and rejected it, which turned a
+// correct profile into a false NAME_MISMATCH and would have made the overlay
+// refuse to draw a valid chain.
+static int klass_read_cb(void* ctx, NA_U64 va, void* out, NA_U32 size) {
+  return static_cast<const nzl::IMemory*>(ctx)->read(va, out, size) ? 1 : 0;
+}
 static std::optional<std::string> read_klass_name(const nzl::IMemory& m,
                                                    uint64_t klass,
                                                    uint32_t name_offset) {
   if (!nzl::plausible_ptr(klass) || klass > UINT64_MAX - name_offset)
     return std::nullopt;
   auto name_ptr = m.ptr(klass + name_offset);
-  if (!name_ptr || !nzl::plausible_ptr(*name_ptr)) return std::nullopt;
-  char name[64] = {};
-  if (!m.read(*name_ptr, name, sizeof(name) - 1)) return std::nullopt;
-  name[sizeof(name) - 1] = 0;
+  if (!name_ptr) return std::nullopt;
+  char name[NA_KLASS_MAX_NAME_BYTES] = {};
+  if (!na_klass_read_text(klass_read_cb,
+                          const_cast<void*>(static_cast<const void*>(&m)),
+                          *name_ptr, name, static_cast<NA_U32>(sizeof(name))))
+    return std::nullopt;
   return std::string(name);
 }
 static bool klass_name_is(const nzl::IMemory& m, uint64_t klass,

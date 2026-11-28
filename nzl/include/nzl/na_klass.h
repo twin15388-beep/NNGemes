@@ -123,6 +123,22 @@ static inline int na_klass_sweep(na_klass_read_fn read, void* ctx, NA_U64 image_
     if (image_base > (NA_U64)-1 - rva) return 0;
     if (!max_candidates) max_candidates = NA_KLASS_DEFAULT_CANDIDATES;
 
+    /* The claimed slot first. The window loop spends a fixed candidate
+     * budget in address order, and the .data of a 148 MB image is dense with
+     * user-range pointers: on 2026-11-28 the budget ran out 600 candidates
+     * before reaching a slot that was correct all along. */
+    {
+        NA_U64 direct = 0;
+        if (na_user_range(image_base + rva, 8) &&
+            read(ctx, image_base + rva, &direct, 8) &&
+            na_user_range(direct, 8) && direct <= (NA_U64)-1 - name_off &&
+            na_klass_is(read, ctx, direct, name_off, want)) {
+            if (examined) *examined = 1;
+            *out_rva = rva;
+            return 1;
+        }
+    }
+
     begin = image_base + rva - window;
     end = image_base + rva + window;
     if (end < begin) return 0;

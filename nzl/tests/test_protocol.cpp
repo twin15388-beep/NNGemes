@@ -670,6 +670,45 @@ void test_klass_identify() {
   CHECK(!na_klass_sweep(synth_read_full, &space, image, 0x1000, 0, name_off, "Game",
                         NA_KLASS_DEFAULT_CANDIDATES, page.data(), &examined, &found_rva));
 
+  /* REGRESSION 2026-11-28: a name string pointer is not 8-byte aligned.
+   * IL2CPP interns names in a byte pool; the live run had "Game" at an
+   * address ending in 6 and plausible_ptr() rejected it. The comparison must
+   * not care about alignment, only readability. */
+  {
+    const NA_U64 odd_name = 0x30000003;
+    SynthSpace odd;
+    odd.add(image, 0x2000);
+    odd.add(klass, 0x1000);
+    odd.add(0x30000000, 0x1000);
+    odd.put_u64(slot, klass);
+    odd.put_u64(klass + name_off, odd_name);
+    odd.fill(odd_name, std::vector<NA_U8>{'G', 'a', 'm', 'e', 0});
+    CHECK(na_klass_is(synth_read_full, &odd, klass, name_off, "Game"));
+    examined = 0;
+    CHECK(na_klass_sweep(synth_read_full, &odd, 0x10000000, 0x1000, 0x800, name_off,
+                         "Game", NA_KLASS_DEFAULT_CANDIDATES, page.data(), &examined,
+                         &found_rva));
+  }
+
+  /* REGRESSION 2026-11-28: the slot under investigation is found even when
+   * the surrounding window is dense with non-matching user-range pointers.
+   * The sweep used to spend its whole candidate budget before reaching it. */
+  {
+    SynthSpace dense;
+    dense.add(image, 0x4000);
+    dense.add(klass, 0x1000);
+    dense.add(name, 0x1000);
+    for (NA_U32 i = 0; i < 0x4000 / 8; ++i)
+      dense.put_u64(image + i * 8, 0x40000000ULL + i * 0x1000ULL);  /* unmapped */
+    dense.put_u64(slot, klass);
+    dense.put_u64(klass + name_off, name);
+    dense.fill(name, std::vector<NA_U8>{'G', 'a', 'm', 'e', 0});
+    examined = 0;
+    CHECK(na_klass_sweep(synth_read_full, &dense, image, 0x1000, 0x800, name_off, "Game",
+                         5, page.data(), &examined, &found_rva));
+    CHECK_EQ(found_rva, 0x1000u);
+  }
+
   /* the candidate budget is a hard cap: user-range pointers that are not
    * readable still cost a name read, so they must be counted and stopped */
   SynthSpace cap;
