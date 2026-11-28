@@ -1001,3 +1001,42 @@ BSOD analysis»). Драйвер не загружался, BAT не запус�
 Проверено здесь: `t_protocol` 300272/0, `check_driver.sh`, `check_client.sh` —
 exit 0. Не проверено: сама сборка MSVC (нет тулчейна), поэтому точная причина
 ошибки `nzl_protocol_tests` пока неизвестна — нужен вывод `-Build`.
+
+## MSVC C2664: NA_U32 против uint32_t (2026-11-28 15:18)
+
+Второй отчёт (`nzl_report_20261128-151820.txt`, head `8594e82`) дал точный текст
+ошибки, ради которого и делался захват вывода BuildAll:
+
+```
+test_protocol.cpp(173,41): error C2664: SynthSpace::read_cb(uint64_t,void*,uint32_t,uint32_t*):
+  невозможно преобразовать аргумент 4 из "NA_U32 *" в "uint32_t *"
+test_protocol.cpp(177,10): error C2664: synth_read(void*,NA_U64,void*,NA_U32,NA_U32*):
+  невозможно преобразовать аргумент 5 из "uint32_t *" в "NA_U32 *"
+```
+
+Причина: под MSVC (LLP64) `NA_U32` — это `unsigned long`, а `uint32_t` —
+`unsigned int`. Размер одинаковый, типы разные, поэтому `uint32_t*` не
+преобразуется в `NA_U32*`. На Linux (LP64) `NA_U32` == `unsigned int`, g++
+молчит — класс ошибки невидим на хосте.
+
+Что сделано:
+- `nzl/tests/test_protocol.cpp` переведён целиком на `NA_U8/NA_U32/NA_U64`
+  (0 вхождений `uintN_t` в коде, остались только в пояснительном комментарии),
+  добавлены `static_assert` на ширины.
+- `nzl/tests/check_wire_types.sh` — gate: запрещает `<stdint>`-имена в файлах,
+  которые реализуют или проверяют протокол (`na_*.h`, `test_protocol.cpp`,
+  `sc_drv.c`, `sc.h`). Проверен и положительно, и отрицательно (подсаженный
+  `uint32_t*` ловится с номером строки).
+
+Состояние сборки владельца на 15:18 (из отчёта):
+- драйвер **собрался**: `BUILD_OK`, exit=0, единственное предупреждение
+  `C4996 ExAllocatePoolWithTag is deprecated` (оставлено сознательно:
+  `ExAllocatePool2` есть только с Win10 2004 и хуже для manual map);
+- configure exit=0, новый таргет `nzl_protocol_tests.vcxproj` появился;
+- упал только `nzl_protocol_tests` на C2664, из-за чего `ctest` не запустился;
+- SDK найден в `D:\Windows Kits\10`, WDK km headers 10.0.26100.0 — мой
+  исправленный детект через реестр работает.
+
+Проверено здесь: 5 наборов host-тестов + ASan/UBSan, оба syntax-гейта, новый
+type-gate — всё exit 0. Сборка MSVC не проверена (тулчейна нет) — нужен
+следующий `-Build`.

@@ -20,12 +20,21 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <set>
 #include <vector>
+
+/* Type discipline (learned the hard way, MSVC C2664 on the owner's box):
+ * NA_U32 is `unsigned long` under LLP64 but `unsigned int` under LP64, and
+ * uint32_t is `unsigned int` on both. They are DIFFERENT TYPES with the same
+ * size, so `uint32_t*` will not convert to `NA_U32*` under MSVC even though
+ * g++ on Linux accepts it silently. Everything in this file that crosses the
+ * na_* interface uses NA_U32/NA_U64/NA_U8 exclusively - no <cstdint> names. */
+static_assert(sizeof(NA_U32) == 4, "NA_U32 must be 32 bit");
+static_assert(sizeof(NA_U64) == 8, "NA_U64 must be 64 bit");
+static_assert(sizeof(NA_I32) == 4, "NA_I32 must be 32 bit");
 
 namespace {
 
@@ -54,8 +63,8 @@ int checks = 0;
     }                                                                          \
   } while (false)
 
-uint64_t g_rng = 0x9E3779B97F4A7C15ULL;
-uint64_t next_rand() {
+NA_U64 g_rng = 0x9E3779B97F4A7C15ULL;
+NA_U64 next_rand() {
   g_rng ^= g_rng << 13;
   g_rng ^= g_rng >> 7;
   g_rng ^= g_rng << 17;
@@ -65,21 +74,21 @@ uint64_t next_rand() {
 /* ---- synthetic target address space ----------------------------------- */
 
 struct Region {
-  uint64_t base = 0;
-  uint64_t size = 0;
-  uint32_t state = 0x1000;   /* MEM_COMMIT */
-  uint32_t protect = 0x04;   /* PAGE_READWRITE */
-  uint32_t type = 0x20000;   /* MEM_PRIVATE */
+  NA_U64 base = 0;
+  NA_U64 size = 0;
+  NA_U32 state = 0x1000;   /* MEM_COMMIT */
+  NA_U32 protect = 0x04;   /* PAGE_READWRITE */
+  NA_U32 type = 0x20000;   /* MEM_PRIVATE */
   bool unreadable = false;   /* simulate a page that MmCopy cannot read */
 };
 
 struct SynthSpace {
-  std::map<uint64_t, Region> regions;                 /* keyed by base */
-  std::map<uint64_t, std::vector<uint8_t>> mem;       /* keyed by base */
+  std::map<NA_U64, Region> regions;                 /* keyed by base */
+  std::map<NA_U64, std::vector<NA_U8>> mem;       /* keyed by base */
   int region_queries = 0;
 
-  Region& add(uint64_t base, uint64_t size, uint32_t state = 0x1000,
-              uint32_t protect = 0x04, uint32_t type = 0x20000) {
+  Region& add(NA_U64 base, NA_U64 size, NA_U32 state = 0x1000,
+              NA_U32 protect = 0x04, NA_U32 type = 0x20000) {
     Region r;
     r.base = base;
     r.size = size;
@@ -87,11 +96,11 @@ struct SynthSpace {
     r.protect = protect;
     r.type = type;
     regions[base] = r;
-    mem[base] = std::vector<uint8_t>(size, 0);
+    mem[base] = std::vector<NA_U8>(size, 0);
     return regions[base];
   }
 
-  void put_u64(uint64_t va, uint64_t value) {
+  void put_u64(NA_U64 va, NA_U64 value) {
     for (auto& kv : mem) {
       if (va >= kv.first && va + 8 <= kv.first + kv.second.size()) {
         std::memcpy(kv.second.data() + (va - kv.first), &value, 8);
@@ -102,7 +111,7 @@ struct SynthSpace {
     ++failures;
   }
 
-  void fill(uint64_t va, const std::vector<uint8_t>& bytes) {
+  void fill(NA_U64 va, const std::vector<NA_U8>& bytes) {
     for (auto& kv : mem) {
       if (va >= kv.first && va + bytes.size() <= kv.first + kv.second.size()) {
         std::memcpy(kv.second.data() + (va - kv.first), bytes.data(),
@@ -116,7 +125,7 @@ struct SynthSpace {
 
   /* Mirrors ZwQueryVirtualMemory(MemoryBasicInformation): the region that
    * contains `va`, or a MEM_FREE span up to the next described region. */
-  int region_cb(uint64_t va, NA_REGION* out) {
+  int region_cb(NA_U64 va, NA_REGION* out) {
     ++region_queries;
     if (out == nullptr) return 0;
     std::memset(out, 0, sizeof(*out));
@@ -134,7 +143,7 @@ struct SynthSpace {
     }
     /* Nothing described above `va`: a free span up to the user ceiling,
      * exactly like ZwQueryVirtualMemory at the top of the address space. */
-    const uint64_t limit = (it == regions.end()) ? NA_USER_LIMIT : it->first;
+    const NA_U64 limit = (it == regions.end()) ? NA_USER_LIMIT : it->first;
     if (limit <= va) return 0;
     out->base = va;
     out->size = limit - va;
@@ -144,7 +153,7 @@ struct SynthSpace {
     return out->size != 0;
   }
 
-  int read_cb(uint64_t va, void* out, uint32_t size, uint32_t* copied) {
+  int read_cb(NA_U64 va, void* out, NA_U32 size, NA_U32* copied) {
     *copied = 0;
     if (!out || !size) return 0;
     auto it = regions.upper_bound(va);
@@ -155,9 +164,9 @@ struct SynthSpace {
     if (r.unreadable) return 0;
     if (!na_scan_region_ok(r.state, r.protect, r.type)) return 0;
 
-    const uint64_t room = r.base + r.size - va;
-    uint32_t n = size;
-    if (room < n) n = static_cast<uint32_t>(room);
+    const NA_U64 room = r.base + r.size - va;
+    NA_U32 n = size;
+    if (room < n) n = static_cast<NA_U32>(room);
     if (!n) return 0;
     const auto& blob = mem.at(r.base);
     std::memcpy(out, blob.data() + (va - r.base), n);
@@ -173,22 +182,22 @@ int synth_read(void* ctx, NA_U64 va, void* out, NA_U32 size, NA_U32* copied) {
   return static_cast<SynthSpace*>(ctx)->read_cb(va, out, size, copied);
 }
 int synth_read_full(void* ctx, NA_U64 va, void* out, NA_U32 size) {
-  uint32_t got = 0;
+  NA_U32 got = 0;
   return synth_read(ctx, va, out, size, &got) && got == size;
 }
 
 /* Brute-force reference: every qword-aligned match in every region the
  * classifier accepts. */
-std::vector<uint64_t> reference_matches(SynthSpace& space, uint64_t pattern) {
-  std::vector<uint64_t> hits;
+std::vector<NA_U64> reference_matches(SynthSpace& space, NA_U64 pattern) {
+  std::vector<NA_U64> hits;
   for (const auto& kv : space.regions) {
     const Region& r = kv.second;
     if (!na_scan_region_ok(r.state, r.protect, r.type)) continue;
     auto blob_it = space.mem.find(r.base);
     if (blob_it == space.mem.end()) continue;
-    const std::vector<uint8_t>& blob = blob_it->second;
-    for (uint64_t off = 0; off + 8 <= r.size; off += 8) {
-      uint64_t v = 0;
+    const std::vector<NA_U8>& blob = blob_it->second;
+    for (NA_U64 off = 0; off + 8 <= r.size; off += 8) {
+      NA_U64 v = 0;
       std::memcpy(&v, blob.data() + off, 8);
       if (v == pattern) hits.push_back(r.base + off);
     }
@@ -199,11 +208,11 @@ std::vector<uint64_t> reference_matches(SynthSpace& space, uint64_t pattern) {
 
 struct ScanRunner {
   SynthSpace& space;
-  std::vector<uint8_t> scratch;
+  std::vector<NA_U8> scratch;
   NA_SCAN_IO io{};
 
-  explicit ScanRunner(SynthSpace& s, uint32_t chunk = 0x10000,
-                      uint64_t max_bytes = 0)
+  explicit ScanRunner(SynthSpace& s, NA_U32 chunk = 0x10000,
+                      NA_U64 max_bytes = 0)
       : space(s) {
     scratch.assign(chunk ? chunk : 0x10000, 0);
     io.region = synth_region;
@@ -216,12 +225,12 @@ struct ScanRunner {
 };
 
 /* Runs the scan the way the client does: resume until next == 0. */
-std::vector<uint64_t> scan_all(ScanRunner& runner, uint64_t start,
-                               uint64_t pattern, uint32_t maxcand,
-                               uint32_t* calls_out = nullptr) {
-  std::vector<uint64_t> all;
-  uint64_t cursor = start;
-  uint32_t calls = 0;
+std::vector<NA_U64> scan_all(ScanRunner& runner, NA_U64 start,
+                               NA_U64 pattern, NA_U32 maxcand,
+                               NA_U32* calls_out = nullptr) {
+  std::vector<NA_U64> all;
+  NA_U64 cursor = start;
+  NA_U32 calls = 0;
   NA_U64 cands[NA_SCAN_MAX_CAND];
   bool first = true;
   while (first || cursor) {
@@ -289,8 +298,8 @@ void test_user_range() {
   CHECK(na_user_range(0x1000, 0));
 
   for (int i = 0; i < 200000; ++i) {
-    uint64_t addr = next_rand();
-    uint64_t size = next_rand() % 0x100000;
+    NA_U64 addr = next_rand();
+    NA_U64 size = next_rand() % 0x100000;
     if (i & 1) size = next_rand() >> 40;
     bool ref = addr < NA_USER_LIMIT && size <= NA_USER_LIMIT - addr;
     bool got = na_user_range(addr, size) != 0;
@@ -339,15 +348,15 @@ void test_span_and_batch() {
 
   for (int i = 0; i < 100000; ++i) {
     NA_ITEM item{};
-    uint32_t total = static_cast<uint32_t>(next_rand() % 0x20000);
+    NA_U32 total = static_cast<NA_U32>(next_rand() % 0x20000);
     item.address = next_rand() % (NA_USER_LIMIT + 0x1000);
-    item.offset = static_cast<uint32_t>(next_rand() % 0x20000);
-    item.size = static_cast<uint32_t>(next_rand() % 0x20000);
-    bool ref = item.size != 0 && static_cast<uint64_t>(item.offset) <= total &&
-               static_cast<uint64_t>(item.size) <=
-                   static_cast<uint64_t>(total) - item.offset &&
+    item.offset = static_cast<NA_U32>(next_rand() % 0x20000);
+    item.size = static_cast<NA_U32>(next_rand() % 0x20000);
+    bool ref = item.size != 0 && static_cast<NA_U64>(item.offset) <= total &&
+               static_cast<NA_U64>(item.size) <=
+                   static_cast<NA_U64>(total) - item.offset &&
                item.address < NA_USER_LIMIT &&
-               static_cast<uint64_t>(item.size) <= NA_USER_LIMIT - item.address;
+               static_cast<NA_U64>(item.size) <= NA_USER_LIMIT - item.address;
     bool got = na_batch_item_ok(&item, total) != 0;
     if (ref != got) {
       std::printf("FAIL batch addr=0x%llx off=0x%x size=0x%x total=0x%x\n",
@@ -362,8 +371,8 @@ void test_span_and_batch() {
 
 void test_region_classifier() {
   std::printf("-- na_scan_region_ok\n");
-  const uint32_t readable[] = {0x02, 0x04, 0x08, 0x20, 0x40, 0x80};
-  for (uint32_t p : readable) CHECK(na_scan_region_ok(0x1000, p, 0x20000));
+  const NA_U32 readable[] = {0x02, 0x04, 0x08, 0x20, 0x40, 0x80};
+  for (NA_U32 p : readable) CHECK(na_scan_region_ok(0x1000, p, 0x20000));
   CHECK(!na_scan_region_ok(0x1000, 0x01, 0x20000));            /* NOACCESS */
   CHECK(!na_scan_region_ok(0x1000, 0x04, 0x1000000));          /* MEM_IMAGE */
   CHECK(!na_scan_region_ok(0x1000, 0x04, 0x40000));            /* MEM_MAPPED */
@@ -382,7 +391,7 @@ void test_scan_completeness() {
   space.add(0x1C0000, 0x10000, 0x1000, 0x04);          /* private RW   */
   space.add(0x220000, 0x8000, 0x1000, 0x04);           /* private RW   */
 
-  const uint64_t pattern = 0xDEADBEEFCAFEBABEULL;
+  const NA_U64 pattern = 0xDEADBEEFCAFEBABEULL;
   space.put_u64(0x100000, pattern);
   space.put_u64(0x100FF8, pattern);
   space.put_u64(0x11FFF8, pattern);          /* last qword of the region */
@@ -397,7 +406,7 @@ void test_scan_completeness() {
   CHECK_EQ(ref.size(), static_cast<size_t>(7));
 
   ScanRunner runner(space);
-  uint32_t calls = 0;
+  NA_U32 calls = 0;
   auto got = scan_all(runner, 0x100000, pattern, 256, &calls);
   std::sort(got.begin(), got.end());
   CHECK_EQ(got.size(), ref.size());
@@ -410,7 +419,7 @@ void test_scan_completeness() {
   CHECK(got2 == ref);
 
   /* Small chunks must not change the result set. */
-  const uint32_t chunks[] = {8u, 24u, 64u, 4096u, 0x10000u};
+  const NA_U32 chunks[] = {8u, 24u, 64u, 4096u, 0x10000u};
   for (unsigned ci = 0; ci < sizeof(chunks) / sizeof(chunks[0]); ++ci) {
     ScanRunner r3(space, chunks[ci]);
     auto g = scan_all(r3, 0, pattern, 256);
@@ -423,10 +432,10 @@ void test_scan_resume_no_livelock() {
   std::printf("-- scan resume (regression: infinite resume VA)\n");
   SynthSpace space;
   space.add(0x100000, 0x10000);
-  const uint64_t pattern = 0x1122334455667788ULL;
-  std::vector<uint64_t> expected;
+  const NA_U64 pattern = 0x1122334455667788ULL;
+  std::vector<NA_U64> expected;
   for (int i = 0; i < 10; ++i) {
-    uint64_t va = 0x100000 + i * 0x1000;
+    NA_U64 va = 0x100000 + i * 0x1000;
     space.put_u64(va, pattern);
     expected.push_back(va);
   }
@@ -434,9 +443,9 @@ void test_scan_resume_no_livelock() {
   /* maxcand = 1 inside one 64 KB chunk: the old code returned the chunk
    * start as the resume VA and never terminated. */
   ScanRunner runner(space);
-  uint64_t cursor = 0x100000;
-  std::vector<uint64_t> got;
-  uint32_t calls = 0;
+  NA_U64 cursor = 0x100000;
+  std::vector<NA_U64> got;
+  NA_U32 calls = 0;
   while (cursor && calls < 64) {
     NA_U64 cands[NA_SCAN_MAX_CAND];
     NA_U32 found = 0;
@@ -476,13 +485,13 @@ void test_scan_budget() {
   std::printf("-- scan byte budget\n");
   SynthSpace space;
   space.add(0x100000, 0x100000);
-  const uint64_t pattern = 0x5555AAAA5555AAAAULL;
+  const NA_U64 pattern = 0x5555AAAA5555AAAAULL;
   for (int i = 0; i < 8; ++i) space.put_u64(0x100000 + i * 0x20000, pattern);
 
   /* 64 KB budget per call: the scan must stop early, return a resume VA and
    * still find all 8 matches across calls. */
   ScanRunner runner(space, 0x10000, 0x10000);
-  uint32_t calls = 0;
+  NA_U32 calls = 0;
   auto got = scan_all(runner, 0x100000, pattern, 256, &calls);
   std::sort(got.begin(), got.end());
   CHECK_EQ(got.size(), static_cast<size_t>(8));
@@ -520,17 +529,17 @@ void test_degenerate_args() {
 
 void test_peb_walk() {
   std::printf("-- PEB module walk\n");
-  const uint64_t peb = 0x200000;
-  const uint64_t ldr = 0x300000;
-  const uint64_t head = ldr + NA_LDR_INLOADORDER;
-  const uint64_t e1 = 0x400000;
-  const uint64_t e2 = 0x410000;
-  const uint64_t name1 = 0x500000;   /* L"GameAssembly.dll"  */
-  const uint64_t name2 = 0x510000;   /* L"UnityPlayer.dll"   */
-  const uint64_t base1 = 0x7FFB10000000ULL;
-  const uint64_t base2 = 0x7FFB20000000ULL;
+  const NA_U64 peb = 0x200000;
+  const NA_U64 ldr = 0x300000;
+  const NA_U64 head = ldr + NA_LDR_INLOADORDER;
+  const NA_U64 e1 = 0x400000;
+  const NA_U64 e2 = 0x410000;
+  const NA_U64 name1 = 0x500000;   /* L"GameAssembly.dll"  */
+  const NA_U64 name2 = 0x510000;   /* L"UnityPlayer.dll"   */
+  const NA_U64 base1 = 0x7FFB10000000ULL;
+  const NA_U64 base2 = 0x7FFB20000000ULL;
 
-  auto put = [](SynthSpace& s, uint64_t va, uint64_t v) { s.put_u64(va, v); };
+  auto put = [](SynthSpace& s, NA_U64 va, NA_U64 v) { s.put_u64(va, v); };
   SynthSpace space;
   space.add(0x200000, 0x1000);
   space.add(0x300000, 0x1000);
@@ -540,9 +549,9 @@ void test_peb_walk() {
   space.add(0x510000, 0x1000);
 
   auto wstr = [](const char* ascii) {
-    std::vector<uint8_t> out;
+    std::vector<NA_U8> out;
     for (const char* p = ascii; *p; ++p) {
-      out.push_back(static_cast<uint8_t>(*p));
+      out.push_back(static_cast<NA_U8>(*p));
       out.push_back(0);
     }
     return out;
@@ -554,7 +563,7 @@ void test_peb_walk() {
   put(space, e1 + NA_LDR_ENTRY_DLLBASE, base1);
   put(space, e1 + NA_LDR_ENTRY_SIZE, 0x8D40000);
   put(space, e1 + NA_LDR_ENTRY_NAMEDLL,
-      static_cast<uint64_t>(std::strlen("GameAssembly.dll") * 2));
+      static_cast<NA_U64>(std::strlen("GameAssembly.dll") * 2));
   space.put_u64(e1 + NA_LDR_ENTRY_NAMEDLL + NA_UNICODE_STRING_BUF, name1);
   space.fill(name1, wstr("GameAssembly.dll"));
 
@@ -562,7 +571,7 @@ void test_peb_walk() {
   put(space, e2 + NA_LDR_ENTRY_DLLBASE, base2);
   put(space, e2 + NA_LDR_ENTRY_SIZE, 0x22D4000);
   put(space, e2 + NA_LDR_ENTRY_NAMEDLL,
-      static_cast<uint64_t>(std::strlen("UnityPlayer.dll") * 2));
+      static_cast<NA_U64>(std::strlen("UnityPlayer.dll") * 2));
   space.put_u64(e2 + NA_LDR_ENTRY_NAMEDLL + NA_UNICODE_STRING_BUF, name2);
   space.fill(name2, wstr("UnityPlayer.dll"));
 
