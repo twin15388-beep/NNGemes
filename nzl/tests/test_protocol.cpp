@@ -17,6 +17,7 @@
 #include "nzl/na_validate.h"
 #include "nzl/na_scan.h"
 #include "nzl/na_pebwalk.h"
+#include "nzl/na_klass.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -617,6 +618,71 @@ void test_peb_walk() {
 
 }  // namespace
 
+void test_klass_identify() {
+  std::printf("-- class identification (na_klass)\n");
+  const NA_U64 image = 0x10000000;
+  const NA_U64 klass = 0x20000000;
+  const NA_U64 name = 0x30000000;
+  const NA_U64 slot = image + 0x1000;
+  const NA_U32 name_off = 0x10;
+
+  SynthSpace space;
+  space.add(image, 0x4000);
+  space.add(klass, 0x1000);
+  space.add(name, 0x1000);
+  space.put_u64(slot, klass);
+  space.put_u64(klass + name_off, name);
+  space.fill(name, std::vector<NA_U8>{'G', 'a', 'm', 'e', 0});
+  space.put_u64(klass + 0x00, 0x40000000);   /* image pointer, not text */
+  space.put_u64(klass + name_off + 8, 0x0);
+
+  /* text rules: printable, >= 2 chars, NUL-terminated */
+  CHECK_EQ(na_klass_text_len("Game", 32), 4u);
+  CHECK_EQ(na_klass_text_len("G", 32), 0u);
+  CHECK_EQ(na_klass_text_len("", 32), 0u);
+  CHECK_EQ(na_klass_text_len("Ga\x01me", 32), 0u);
+
+  /* exact, case-sensitive name match at the configured offset */
+  CHECK(na_klass_is(synth_read_full, &space, klass, name_off, "Game"));
+  CHECK(!na_klass_is(synth_read_full, &space, klass, name_off, "GameModel"));
+  CHECK(!na_klass_is(synth_read_full, &space, klass, name_off, "game"));
+  CHECK(!na_klass_is(synth_read_full, &space, klass, 0x18, "Game"));
+
+  std::vector<NA_U8> page(NA_KLASS_PAGE_BYTES);
+  NA_U32 examined = 0;
+  NA_U64 found_rva = 0;
+
+  /* finds the slot that leads to the wanted class, reports image-relative rva */
+  CHECK(na_klass_sweep(synth_read_full, &space, image, 0x1000, 0x800, name_off, "Game",
+                       NA_KLASS_DEFAULT_CANDIDATES, page.data(), &examined, &found_rva));
+  CHECK_EQ(found_rva, 0x1000u);
+  CHECK(examined >= 1u);
+
+  /* a slot with the wrong class is not reported as a match */
+  examined = 0;
+  CHECK(!na_klass_sweep(synth_read_full, &space, image, 0x1000, 0x800, name_off, "GameModel",
+                        NA_KLASS_DEFAULT_CANDIDATES, page.data(), &examined, &found_rva));
+  CHECK_EQ(found_rva, 0u);
+
+  /* a window that would start below the image is refused, not wrapped */
+  CHECK(!na_klass_sweep(synth_read_full, &space, image, 0x10, 0x800, name_off, "Game",
+                        NA_KLASS_DEFAULT_CANDIDATES, page.data(), &examined, &found_rva));
+  CHECK(!na_klass_sweep(synth_read_full, &space, image, 0x1000, 0, name_off, "Game",
+                        NA_KLASS_DEFAULT_CANDIDATES, page.data(), &examined, &found_rva));
+
+  /* the candidate budget is a hard cap: user-range pointers that are not
+   * readable still cost a name read, so they must be counted and stopped */
+  SynthSpace cap;
+  cap.add(image, 0x2000);
+  for (NA_U32 i = 0; i < 512; ++i)
+    cap.put_u64(image + i * 8, 0x50000000ULL + i * 0x1000ULL);  /* nothing mapped */
+  examined = 0;
+  NA_U32 cap_examined = 0;
+  CHECK(!na_klass_sweep(synth_read_full, &cap, image, 0x1000, 0x800, name_off, "Game",
+                        5, page.data(), &cap_examined, &found_rva));
+  CHECK_EQ(cap_examined, 5u);
+}
+
 int main() {
   std::printf("NA_SHM layout: sizeof=0x%X region=0x%X items=0x%X data=0x%X\n",
               static_cast<unsigned>(sizeof(NA_SHM)), NA_SHM_OFF_REGION,
@@ -631,6 +697,7 @@ int main() {
   test_scan_budget();
   test_degenerate_args();
   test_peb_walk();
+  test_klass_identify();
 
   std::printf("%d checks, %d failures\n", checks, failures);
   if (failures) {

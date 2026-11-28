@@ -20,6 +20,7 @@
 #include "nzl/chain.h"
 #include "nzl/esp_pipeline.h"
 #include "nzl/windows_profile.h"
+#include "nzl/na_klass.h"
 #include "../client/sc_client.h"
 
 static FILE* g_log = nullptr;
@@ -304,6 +305,62 @@ int main(int argc, char** argv) {
       return std::string_view(actual) == expected;
     };
 
+    // ---- why a TypeInfo check failed ---------------------------------
+    // "NAME_MISMATCH" is not an answer. Three different faults produce it:
+    // the RVA is not a class-pointer slot, it is a slot for another class, or
+    // it is right and the name field offset is wrong for this build. Measuring
+    // beats guessing, so on a mismatch: dump the alleged class, print the name
+    // the slot really leads to, and sweep a bounded window around the claimed
+    // RVA with the tested na_klass.h logic.
+    void* read_ctx = const_cast<void*>(static_cast<const void*>(&mem));
+    const auto klass_read = [](void* ctx, NA_U64 va, void* out, NA_U32 size) -> int {
+      return static_cast<decltype(mem)*>(ctx)->read(va, out, size) ? 1 : 0;
+    };
+    const auto explain_type_slot = [&](size_t index, const auto& slot) {
+      const NA_U32 name_off = static_cast<NA_U32>(offsets.il2cpp_class_name);
+      logf("[klass] slot=%.*s rva=0x%llX klass=0x%llX plausible=%s\n",
+           static_cast<int>(slot.class_name.size()), slot.class_name.data(),
+           static_cast<unsigned long long>(slot.rva.value),
+           static_cast<unsigned long long>(klass[index]),
+           nzl::plausible_ptr(klass[index]) ? "yes" : "no");
+      char text[NA_KLASS_MAX_NAME_BYTES]{};
+      if (nzl::plausible_ptr(klass[index])) {
+        for (uint64_t field = 0; field < 0x80; field += 8) {
+          const auto value = mem.ptr(klass[index] + field);
+          if (!value) continue;
+          char at[NA_KLASS_MAX_NAME_BYTES]{};
+          if (na_klass_read_text(klass_read, read_ctx, *value, at, sizeof(at)))
+            logf("  +0x%02llX -> 0x%llX  \"%s\"\n", static_cast<unsigned long long>(field),
+                 static_cast<unsigned long long>(*value), at);
+          else
+            logf("  +0x%02llX -> 0x%llX\n", static_cast<unsigned long long>(field),
+                 static_cast<unsigned long long>(*value));
+        }
+        if (na_klass_read_name(klass_read, read_ctx, klass[index], name_off, text, sizeof(text)))
+          logf("[klass] name at +0x%llX is \"%s\", profile wants \"%.*s\"\n",
+               static_cast<unsigned long long>(name_off), text,
+               static_cast<int>(slot.class_name.size()), slot.class_name.data());
+        else
+          logf("[klass] no printable name at +0x%llX: either this is not a class "
+               "or the name field moved.\n", static_cast<unsigned long long>(name_off));
+      }
+      std::vector<NA_U8> page(NA_KLASS_PAGE_BYTES);
+      NA_U32 examined = 0;
+      NA_U64 found_rva = 0;
+      const std::string wanted(slot.class_name);
+      if (na_klass_sweep(klass_read, read_ctx, ga, slot.rva.value, NA_KLASS_DEFAULT_WINDOW,
+                         name_off, wanted.c_str(), NA_KLASS_DEFAULT_CANDIDATES,
+                         page.data(), &examined, &found_rva))
+        logf("[klass] SWEEP FOUND %s at image+0x%llX (profile claims 0x%llX), %u candidates\n",
+             wanted.c_str(), static_cast<unsigned long long>(found_rva),
+             static_cast<unsigned long long>(slot.rva.value), examined);
+      else
+        logf("[klass] sweep +-0x%X around 0x%llX: %u candidates, no %s. Either the RVA "
+             "is not a class slot or the name offset 0x%llX is wrong.\n",
+             NA_KLASS_DEFAULT_WINDOW, static_cast<unsigned long long>(slot.rva.value),
+             examined, wanted.c_str(), static_cast<unsigned long long>(name_off));
+    };
+
     classes_ok = true;
     for (size_t i = 0; i < profile.type_info.size(); ++i) {
       const auto& slot = profile.type_info[i];
@@ -323,6 +380,7 @@ int main(int argc, char** argv) {
            name_ok ? "NAME_OK" : "NAME_MISMATCH");
       if (!name_ok) {
         classes_ok = false;
+        explain_type_slot(i, slot);
         break;
       }
     }

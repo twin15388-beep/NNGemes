@@ -1192,3 +1192,46 @@ DriverUnload подключается; при manual map — нет, и это �
 
 Мелочь: в отчёте печаталось `code=0x0x0000001e` (двойной префикс) —
 исправлено на `code=0x0000001e`.
+
+## Первый живой прогон: транспорт работает, упёрлись в TypeInfo (2026-11-28 16:02)
+
+Драйвер загрузился без BSOD, игра запущена, `nzl_report_20261128-160227.txt`.
+
+```
+[probe] NaInit OK (sharedmem transport alive)
+[probe] NaGetModule (PEB walk): GameAssembly=0x7ff80b6c0000 UnityPlayer=0x7ff814710000 (+31ms)
+[probe] modules: ... (source: PEB walk)
+[probe] transport result: TRANSPORT_OK - driver reads this process
+[profile] status=MATCH size=148323840/148323840 sha=2dc33269.../2dc33269... win32=0
+[profile] loaded SizeOfImage=0x9050000; profile TypeInfo RVAs fit; Game.GameModel=+0xd8
+[profile] TypeInfo Game  rva=0x81B7710 klass=0x23CA2111E30 NAME_MISMATCH
+```
+
+Что это значит по пунктам:
+
+- **PEB-walk в ядре работает: 31 мс** против 238 секунд регионального скана.
+  `NA_CMD_MODULE` впервые выполнен на живой машине, MZ/PE GameAssembly читается
+  через драйвер, `NaQueryRegion` отвечает.
+- **Транспорт и профиль совпали**: размер и SHA GameAssembly равны профильным,
+  SizeOfImage 0x9050000, TypeInfo RVA влезают в образ.
+- **Остановка на имени класса** — последний гейт перед корнем цепочки.
+  `klass=0x23CA2111E30` выглядит как живой указатель кучи, значит либо слот по
+  RVA 0x81B7710 не указывает на класс (script.json может давать адрес метода),
+  либо `name` лежит не на `+0x10` в этой сборке.
+
+Диагностика вместо догадок: `nzl/include/nzl/na_klass.h` (portable, host-tested)
++ вызов из probe. При несовпадении probe теперь печатает:
+
+- дамп 16 qword'ов мнимого класса с расшифровкой тех, что ведут на печатный
+  текст (так `name`/`namespaze`/`image` находятся по факту, а не по вере);
+- имя, которое слот реально даёт (`name at +0x10 is "..."`);
+- `na_klass_sweep` по окну ±0x2000 вокруг заявленного RVA: ищет qword, который
+  ведёт на класс с нужным именем, и печатает `SWEEP FOUND <имя> at image+0x...`.
+
+Границы: окно 0x2000, страница 4096, не больше 600 кандидатов, отказ при
+`rva < window` — превратиться обратно в 238-секундный скан probe не может.
+
+Тесты: `-- class identification (na_klass)` в `test_protocol.cpp`, 300289
+проверок (было 300272): точное имя, регистр, пустой/однобайтовый/непечатный
+текст, поиск с попаданием в RVA, отказ на чужое имя, отказ на окно ниже образа,
+жёсткий бюджет кандидатов.
