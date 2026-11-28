@@ -1419,6 +1419,10 @@ static void set_runtime(Ctx* ui, DWORD pid, bool ready, const std::string& statu
     if (clear_data) { ui->render.clear(); ui->loot.clear(); ui->cars.clear(); }
     overlay = ui->overlay_wnd; menu = ui->menu_wnd;
   }
+  if (menu_status_changed) {
+    std::printf("[NZL] %s\n", status.c_str());
+    std::fflush(stdout);
+  }
   if (overlay) InvalidateRect(overlay, nullptr, FALSE);
   if (menu && menu_status_changed) InvalidateRect(menu, nullptr, FALSE);
 }
@@ -1844,7 +1848,11 @@ int main() {
   MSG msg{};
   while (!done && !g_stop.load()) {
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-      if (msg.message == WM_QUIT) { done = true; break; }
+      if (msg.message == WM_QUIT) {
+        std::printf("[NZL] WM_QUIT received; shutting down.\n");
+        done = true;
+        break;
+      }
       TranslateMessage(&msg); DispatchMessageW(&msg);
     }
     int menu_key = VK_INSERT;
@@ -1859,7 +1867,11 @@ int main() {
       menu_key_was_down = menu_key_down;
     }
     const bool end_key_down = (GetAsyncKeyState(VK_END) & 0x8000) != 0;
-    if (end_key_down && !end_key_was_down) { done = true; break; }
+    if (end_key_down && !end_key_was_down) {
+      std::printf("[NZL] END key pressed; shutting down.\n");
+      done = true;
+      break;
+    }
     end_key_was_down = end_key_down;
     ULONGLONG now = GetTickCount64();
     if (now - last_window_check >= 500) {
