@@ -98,7 +98,6 @@ int main(){
     view.proj_y = terms->proj_y;
     const bool exact = nzl::world_to_screen(view, target, ex, ey, ed);
     C(guessed && exact);
-    C(std::fabs(72.0f /* dot */ < 1.0f) == false);
     C(std::fabs(gy - ey) > 1.0f);  // a wrong lens really does move the box
   }
 

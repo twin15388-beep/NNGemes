@@ -530,33 +530,40 @@ int main(int argc, char** argv) {
              static_cast<unsigned long long>(player.addr));
 
       // "видит не всех": a roster of N with fewer drawn players is normal only
-      // when the rest really have nothing readable. Walk every entry and say
-      // which stage dropped it, and name the class of whatever object is
-      // there, so the answer is data instead of a guess.
+      // when the rest really have nothing readable. Walk every slot of the
+      // entries array (live entries sit anywhere in it, holes are skipped by
+      // dict_value_at) and print the object's id and class name, so the answer
+      // is data instead of a guess.
       if (roster) {
-        std::size_t with_pos = players.size();
+        const auto name_read = [](void* ctx, NA_U64 va, void* out,
+                                  NA_U32 size) -> int {
+          return static_cast<decltype(mem)*>(ctx)->read(va, out, size) ? 1 : 0;
+        };
+        void* name_ctx = const_cast<void*>(static_cast<const void*>(&mem));
         std::size_t seen = 0;
-        for (const auto& entry : *roster) {
-          if (seen >= 32) break;
+        for (int index = 0;
+             static_cast<uint32_t>(index) < roster->array_length && seen < 32;
+             ++index) {
+          const auto entity = nzl::dict_value_at(mem, *roster, index, offsets);
+          if (!entity) continue;
           ++seen;
-          const uint64_t entity = entry.second;
-          if (!nzl::plausible_ptr(entity)) {
-            logf("  entry[%zu] id=%d entity=0x%llX NOT-A-POINTER\n", seen - 1,
-                 entry.first, static_cast<unsigned long long>(entity));
-            continue;
+          int32_t entity_id = -1;
+          if (*entity <= UINT64_MAX - offsets.char_id) {
+            const auto read_id = mem.i32(*entity + offsets.char_id);
+            if (read_id) entity_id = *read_id;
           }
-          char klass_name[NA_KLASS_MAX_NAME_BYTES]{};
-          const auto entity_class = mem.ptr(entity);
-          const bool named = entity_class &&
-              na_klass_read_name(klass_read, read_ctx, *entity_class,
+          char entry_class[NA_KLASS_MAX_NAME_BYTES]{};
+          const auto klass_pointer = mem.ptr(*entity);
+          const bool named = klass_pointer &&
+              na_klass_read_name(name_read, name_ctx, *klass_pointer,
                                  static_cast<NA_U32>(offsets.il2cpp_class_name),
-                                 klass_name, sizeof(klass_name));
-          logf("  entry[%zu] id=%d entity=0x%llX class=%s\n", seen - 1, entry.first,
-               static_cast<unsigned long long>(entity),
-               named ? klass_name : "<unreadable>");
+                                 entry_class, sizeof(entry_class));
+          logf("  slot[%d] id=%d entity=0x%llX class=%s\n", index, entity_id,
+               static_cast<unsigned long long>(*entity),
+               named ? entry_class : "<unreadable>");
         }
         logf("[snapshot] covered=%zu of roster=%d, with_position=%zu\n", seen,
-             roster->count, with_pos);
+             roster->count, players.size());
       }
 
       // Loot never drew because loot_dictionary has no live-verified offset.
@@ -567,6 +574,11 @@ int main(int argc, char** argv) {
       {
         constexpr uint32_t kSweepEnd = 0x200;
         constexpr uint32_t kSweepStep = 8;
+        const auto sweep_read = [](void* ctx, NA_U64 va, void* out,
+                                   NA_U32 size) -> int {
+          return static_cast<decltype(mem)*>(ctx)->read(va, out, size) ? 1 : 0;
+        };
+        void* sweep_ctx = const_cast<void*>(static_cast<const void*>(&mem));
         unsigned reported = 0;
         logf("[sweep] WorldEntitiesModel=0x%llX fields 0x0..0x%X\n",
              static_cast<unsigned long long>(live_chain.world_entities),
@@ -578,7 +590,7 @@ int main(int argc, char** argv) {
           const auto value_class = mem.ptr(*value);
           if (!value_class) continue;
           char value_name[NA_KLASS_MAX_NAME_BYTES]{};
-          if (!na_klass_read_name(klass_read, read_ctx, *value_class,
+          if (!na_klass_read_name(sweep_read, sweep_ctx, *value_class,
                                   static_cast<NA_U32>(offsets.il2cpp_class_name),
                                   value_name, sizeof(value_name)))
             continue;
@@ -612,7 +624,7 @@ int main(int argc, char** argv) {
             const auto entry_class = mem.ptr(*entry);
             char entry_name[NA_KLASS_MAX_NAME_BYTES]{};
             if (!entry_class ||
-                !na_klass_read_name(klass_read, read_ctx, *entry_class,
+                !na_klass_read_name(sweep_read, sweep_ctx, *entry_class,
                                     static_cast<NA_U32>(offsets.il2cpp_class_name),
                                     entry_name, sizeof(entry_name)))
               continue;

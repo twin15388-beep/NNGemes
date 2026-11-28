@@ -432,7 +432,6 @@ struct PlayerCache {
   NameStage name_stage = NameStage::Disabled;
   uint64_t name_slots_root = 0;      // resolved ClientCharacterSlotsModel route
   uint32_t name_slots_offset = 0, name_dict_offset = 0;
-  size_t transform_repoints = 0, transform_refresh_failures = 0;
   uint32_t dictionary_count = 0, dictionary_capacity = 0;
   size_t dictionary_active_values = 0, dictionary_read_failures = 0;
   bool dictionary_header_valid = false;
