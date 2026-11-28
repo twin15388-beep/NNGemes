@@ -29,6 +29,15 @@ if /i "%TOOL%"=="help" goto usage
 if /i "%TOOL%"=="?" goto usage
 
 set "PS1=%ROOT%tools\NZL-%TOOL%.ps1"
+rem Verb -> script aliases. Verbs are what a human types; several scripts are
+rem named after what they do rather than after the verb, and 'build' used to
+rem look for tools\NZL-build.ps1 which does not exist - so the build verb had
+rem never worked at all.
+if /i "%TOOL%"=="build" set "PS1=%ROOT%tools\NZL-BuildAll.ps1"
+if /i "%TOOL%"=="load" set "PS1=%ROOT%tools\NZL-LoadDriver.ps1"
+if /i "%TOOL%"=="crash" set "PS1=%ROOT%tools\NZL-CrashInfo.ps1"
+if /i "%TOOL%"=="dump" set "PS1=%ROOT%tools\NZL-SetKernelDump.ps1"
+if /i "%TOOL%"=="analyze" set "PS1=%ROOT%tools\NZL-AnalyzeDump.ps1"
 if not exist "%PS1%" goto unknown
 
 rem The scripts locate the project through $PSScriptRoot, so the caller's
@@ -55,9 +64,13 @@ exit /b %RC%
 
 :unknown
 echo [NZL] No such tool: %TOOL%
-echo [NZL] Expected file: %PS1%
-echo [NZL] Available:
-for %%F in ("%ROOT%tools\NZL-*.ps1") do echo    %%~nF
+echo [NZL] Looked for: %PS1%
+echo.
+echo   Verbs:
+echo     build load overlay probe report crash dump collect package analyze update clean
+echo.
+echo   Files in tools\:
+for %%F in ("%ROOT%tools\NZL-*.ps1") do echo     %%~nF
 pause
 exit /b 2
 
