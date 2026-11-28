@@ -430,6 +430,8 @@ struct PlayerCache {
   std::vector<PlayerCacheEntry> entries;
   size_t transform_repoints = 0, transform_refresh_failures = 0;
   NameStage name_stage = NameStage::Disabled;
+  uint64_t name_slots_root = 0;      // resolved ClientCharacterSlotsModel route
+  uint32_t name_slots_offset = 0, name_dict_offset = 0;
   size_t transform_repoints = 0, transform_refresh_failures = 0;
   uint32_t dictionary_count = 0, dictionary_capacity = 0;
   size_t dictionary_active_values = 0, dictionary_read_failures = 0;
@@ -734,30 +736,73 @@ static void refresh_player_metadata(Ctx& c, PlayerCache& cache) {
   }
 }
 static void refresh_player_nicknames(Ctx& c, PlayerCache& cache) {
-  if (!c.mem || !c.off.profile_configured || !c.off.nickname_offsets_configured ||
-      !nzl::plausible_ptr(c.chain.battle_model) ||
-      c.chain.battle_model > UINT64_MAX - c.off.battle_model_character_slots ||
-      !object_klass_name_is(*c.mem, c.chain.battle_model, c.off.il2cpp_class_name,
-                            "BattleModel", &c.class_name_cache)) {
-    cache.name_stage = NameStage::BattleModel;
+  if (!c.mem || !c.off.profile_configured || !c.off.nickname_offsets_configured) {
+    cache.name_stage = NameStage::Disabled;
     return;
   }
 
-  auto slots = c.mem->ptr(c.chain.battle_model + c.off.battle_model_character_slots);
-  if (!slots || !nzl::plausible_ptr(*slots) ||
-      !object_klass_name_is(*c.mem, *slots, c.off.il2cpp_class_name,
-                            "ClientCharacterSlotsModel", &c.class_name_cache) ||
-      *slots > UINT64_MAX - c.off.client_slots_by_entity_id) {
+  // Different public dumps disagree about where the character slot model
+  // lives: the SDK dump says BattleModel+0x248, the 2026-11-28 class dump says
+  // BattleEntitiesModel+0x80. Neither is trusted on faith - each candidate is
+  // read and accepted only if the object it points at really is a
+  // ClientCharacterSlotsModel. The winner is remembered until it stops
+  // validating, so the scan costs a handful of reads once per match.
+  auto gated_slots = [&](uint64_t root, uint32_t offset) -> uint64_t {
+    if (!nzl::plausible_ptr(root) || root > UINT64_MAX - offset) return 0;
+    const auto pointer = c.mem->ptr(root + offset);
+    if (!pointer || !nzl::plausible_ptr(*pointer)) return 0;
+    if (!object_klass_name_is(*c.mem, *pointer, c.off.il2cpp_class_name,
+                              "ClientCharacterSlotsModel", &c.class_name_cache))
+      return 0;
+    return *pointer;
+  };
+  uint64_t slot_model = 0;
+  if (cache.name_slots_root)
+    slot_model = gated_slots(cache.name_slots_root, cache.name_slots_offset);
+  if (!slot_model) {
+    const uint64_t roots[] = {c.chain.battle_entities, c.chain.battle_model,
+                              c.chain.world_entities};
+    const uint32_t offsets[] = {0x80, c.off.battle_model_character_slots, 0x18,
+                                0x10, 0x20};
+    for (uint64_t root : roots) {
+      if (slot_model) break;
+      for (uint32_t offset : offsets) {
+        if (offset == 0) continue;
+        if ((slot_model = gated_slots(root, offset)) != 0) {
+          cache.name_slots_root = root;
+          cache.name_slots_offset = offset;
+          break;
+        }
+      }
+    }
+  }
+  if (!slot_model) {
     cache.name_stage = NameStage::Slots;
     return;
   }
-  auto dict = c.mem->ptr(*slots + c.off.client_slots_by_entity_id);
-  if (!dict || !nzl::plausible_ptr(*dict)) {
-    cache.name_stage = NameStage::Dictionary;
-    return;
-  }
 
-  const auto entries = dict_int_entries(c, *dict);
+  // Same reasoning one level down: take the first field of the slot model that
+  // actually holds a non-empty int-keyed dictionary.
+  std::vector<DictIntEntry> entries;
+  if (cache.name_dict_offset) {
+    const auto dict = c.mem->ptr(slot_model + cache.name_dict_offset);
+    if (dict && nzl::plausible_ptr(*dict))
+      entries = dict_int_entries(c, *dict);
+  }
+  if (entries.empty()) {
+    const uint32_t dict_offsets[] = {c.off.client_slots_by_entity_id, 0x18, 0x10,
+                                     0x20, 0x28};
+    for (uint32_t offset : dict_offsets) {
+      if (offset == 0 || slot_model > UINT64_MAX - offset) continue;
+      const auto dict = c.mem->ptr(slot_model + offset);
+      if (!dict || !nzl::plausible_ptr(*dict)) continue;
+      auto candidate = dict_int_entries(c, *dict);
+      if (candidate.empty()) continue;
+      entries = std::move(candidate);
+      cache.name_dict_offset = offset;
+      break;
+    }
+  }
   if (entries.empty()) {
     cache.name_stage = NameStage::Entries;
     return;
@@ -2315,8 +2360,10 @@ static void esp_worker(Ctx* ui) {
         const size_t used = std::strlen(status);
         if (used + 96 < sizeof(status))
           std::snprintf(status + used, sizeof(status) - used,
-                        "\nNAME %s | REPOINT %zu TFAIL %zu\n%s",
+                        "\nNAME %s slot+0x%X dict+0x%X | REPOINT %zu TFAIL %zu\n%s",
                         name_stage_text(player_cache.name_stage),
+                        player_cache.name_slots_offset,
+                        player_cache.name_dict_offset,
                         player_cache.transform_repoints,
                         player_cache.transform_refresh_failures,
                         projection_detail);

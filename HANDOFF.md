@@ -1532,3 +1532,25 @@ cd "D:\NZL Rob run"
   поверхность. Теперь `InvalidateRect` получает объединение прямоугольников
   текущего и прошлого кадра (боксы, подписи, полоса статуса, радар), а раз в
   30 кадров делается полная перерисовка как страховка от артефактов.
+
+## Офсеты из дампа владельца (rbrun.txt, 2026-11-28)
+
+Дамп `Game.Battle.BattleEntitiesModel` даёт поля с точными смещениями:
+`_physicsSceneModel` 0x10, `_playerBattleModel` 0x18, `_inventoryModels` 0x20,
+`_models` 0x50 (`Dictionary<int, IEntityModel>`), `_worldEntitiesModel` 0x60,
+`_characterSlotModel` 0x80 (`ClientCharacterSlotsModel`), `_vehiclesModel` 0x88,
+`EntityModels` 0xE0. Плюс: `BattleCharacterEntityView kView`,
+`UnityEngine.Transform kTransform`, `BattleEntitiesUpdater kUpdater`.
+
+Вывод для ников: слоты публикуются по **`BattleEntitiesModel+0x80`**, а профиль
+искал их по `BattleModel+0x248` (так в SDK-дампе). Оба источника расходятся,
+поэтому `refresh_player_nicknames` больше не доверяет ни одному смещению на
+веру: перебирает `(battle_entities|battle_model|world_entities) x
+(0x80, 0x248, 0x18, 0x10, 0x20)` и принимает только тот объект, чей класс
+действительно `ClientCharacterSlotsModel`. Уровнем ниже так же перебираются
+поля словаря (0x18/0x10/0x20/0x28) и берётся первое непустое. Найденный
+маршрут кэшируется и печатается в статусе: `NAME ... slot+0x80 dict+0x18`.
+
+Это не «попробуем всё подряд»: каждый кандидат проходит гейт по имени класса,
+а остальные стадии (SlotData, EntityId, Nickname) по-прежнему называются в
+`NAME`, поэтому следующий прогон скажет, где именно обрыв.
