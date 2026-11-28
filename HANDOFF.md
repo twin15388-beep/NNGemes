@@ -1463,3 +1463,30 @@ cd "D:\NZL Rob run"
 `NZL-Studio*.bat`, `NZL-Studio-Package.zip`, логи, `nzl_probe/overlay.txt`,
 `crash_info\` (с `-KeepDumps` дампы остаются), `nzl_report_*`. Не трогает
 исходники, `data\`, `requests.jsonl`, `20261126T*.json`.
+
+## Найдена причина «видит не всех» (и почти наверняка «loot мёртв»)
+
+`Dictionary.Count` — это число живых записей, а не размер массива записей.
+Массив записей (`ArrayLength`) содержит дырки от удалённых элементов, и живые
+записи лежат где угодно в `[0, ArrayLength)`. Код сканировал только первые
+`Count` слотов:
+
+- `nzl/src/esp_pipeline.cpp` — `for (index = 0; index < header->count; ++index)`
+- `nzl/src/overlay_windows.cpp` — `dict_values`: `const int total = *count;`
+- `nzl/src/chain.cpp` — `dict_value_at` отбрасывал `index >= header.count`
+
+Живой прогон это и показывал: `roster Count=9 array_capacity=17valid_pos=3`. Из девяти игроков читались те три, чьи записи случайно попали
+в первые девять слотов. Остальные шесть были в слотах 9..16 и не читались
+никогда, ни при каком количестве попыток.
+
+Исправление: сканирование идёт по `array_length`, дырки по-прежнему
+отбрасываются по `hash < 0`. `dict_value_at` теперь ограничен ёмкостью
+массива, а не `Count`. Loot-словарь читается тем же `dict_values`, то есть
+починка общая.
+
+Регрессионный тест в `nzl/tests/test_chain.cpp`: словарь `Count=2`,
+`ArrayLength=8`, живые записи в слотах 5 и 6 — обе находки, дырки игнорируются,
+слот за ёмкостью отклоняется.
+
+Плюс диагностика в пробе: `entry[...] class=...` по каждому игроку ростера и
+`[sweep]` по полям `WorldEntitiesModel` — оттуда берётся офсет лута.

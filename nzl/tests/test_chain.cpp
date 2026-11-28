@@ -31,6 +31,37 @@ int main(){
   m.put<int32_t>(dict + o.dict_count, 1);
   m.put<int32_t>(e0, -1);
   C(!nzl::dict_value_at(m, *h, 0, o).has_value()); // free Dictionary slots are ignored
+  // Regression for "видит не всех": with Count=2 and ArrayLength=8 the live
+  // entries can occupy slots 5 and 6. Bounding the scan by Count returned
+  // nothing at all for such a dictionary.
+  {
+    auto sparse = [&]() {
+      m.put<int32_t>(dict + o.dict_count, 2);
+      m.put<uint64_t>(entries + o.array_length, 8);
+      const auto slot = [&](int index) {
+        return entries + o.array_data + static_cast<uint64_t>(index) * o.dict_stride;
+      };
+      for (int index = 0; index < 8; ++index) m.put<int32_t>(slot(index), -1);
+      m.put<int32_t>(slot(5), 11); m.put<uint64_t>(slot(5) + o.dict_value, ch);
+      m.put<int32_t>(slot(6), 12); m.put<uint64_t>(slot(6) + o.dict_value, ch);
+      const auto sparse_header = nzl::read_dict(m, dict, o);
+      const bool header_ok = sparse_header.has_value() &&
+                             sparse_header->count == 2 &&
+                             sparse_header->array_length == 8;
+      const auto found5 = nzl::dict_value_at(m, *sparse_header, 5, o);
+      const auto found6 = nzl::dict_value_at(m, *sparse_header, 6, o);
+      const bool holes_ignored =
+          !nzl::dict_value_at(m, *sparse_header, 0, o).has_value() &&
+          !nzl::dict_value_at(m, *sparse_header, 7, o).has_value();
+      const bool past_capacity =
+          !nzl::dict_value_at(m, *sparse_header, 8, o).has_value();
+      return header_ok && found5 && *found5 == ch && found6 && *found6 == ch &&
+             holes_ignored && past_capacity;
+    };
+    C(sparse());
+    m.put<int32_t>(dict + o.dict_count, 1);
+    m.put<uint64_t>(entries + o.array_length, 1);
+  }
   nzl::Offsets unknown_profile(nzl::game_profile::GameProfile{});
   const auto unknown_chain = nzl::resolve_chain(m, ue, unknown_profile);
   C(!unknown_chain.ok && unknown_chain.stage == "profile.unconfigured");

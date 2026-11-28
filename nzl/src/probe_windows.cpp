@@ -514,6 +514,101 @@ int main(int argc, char** argv) {
              player.id, player.dead ? "DEAD" : "alive", player.pos.x,
              player.pos.y, player.pos.z, player.dist,
              static_cast<unsigned long long>(player.addr));
+
+      // "видит не всех": a roster of N with fewer drawn players is normal only
+      // when the rest really have nothing readable. Walk every entry and say
+      // which stage dropped it, and name the class of whatever object is
+      // there, so the answer is data instead of a guess.
+      if (roster) {
+        std::size_t with_pos = players.size();
+        std::size_t seen = 0;
+        for (const auto& entry : *roster) {
+          if (seen >= 32) break;
+          ++seen;
+          const uint64_t entity = entry.second;
+          if (!nzl::plausible_ptr(entity)) {
+            logf("  entry[%zu] id=%d entity=0x%llX NOT-A-POINTER\n", seen - 1,
+                 entry.first, static_cast<unsigned long long>(entity));
+            continue;
+          }
+          char klass_name[NA_KLASS_MAX_NAME_BYTES]{};
+          const auto entity_class = mem.ptr(entity);
+          const bool named = entity_class &&
+              na_klass_read_name(klass_read, read_ctx, *entity_class,
+                                 static_cast<NA_U32>(offsets.il2cpp_class_name),
+                                 klass_name, sizeof(klass_name));
+          logf("  entry[%zu] id=%d entity=0x%llX class=%s\n", seen - 1, entry.first,
+               static_cast<unsigned long long>(entity),
+               named ? klass_name : "<unreadable>");
+        }
+        logf("[snapshot] covered=%zu of roster=%d, with_position=%zu\n", seen,
+             roster->count, with_pos);
+      }
+
+      // Loot never drew because loot_dictionary has no live-verified offset.
+      // Instead of guessing, walk the WorldEntitiesModel object field by field
+      // and print the class behind every readable pointer. Any dictionary found
+      // this way is reported with its population and the classes of its first
+      // few values, which is exactly what is needed to name the loot offset.
+      {
+        constexpr uint32_t kSweepEnd = 0x200;
+        constexpr uint32_t kSweepStep = 8;
+        unsigned reported = 0;
+        logf("[sweep] WorldEntitiesModel=0x%llX fields 0x0..0x%X\n",
+             static_cast<unsigned long long>(live_chain.world_entities),
+             static_cast<unsigned>(kSweepEnd));
+        for (uint32_t field = 0; field < kSweepEnd; field += kSweepStep) {
+          if (live_chain.world_entities > UINT64_MAX - field) break;
+          const auto value = mem.ptr(live_chain.world_entities + field);
+          if (!value || !nzl::plausible_ptr(*value)) continue;
+          const auto value_class = mem.ptr(*value);
+          if (!value_class) continue;
+          char value_name[NA_KLASS_MAX_NAME_BYTES]{};
+          if (!na_klass_read_name(klass_read, read_ctx, *value_class,
+                                  static_cast<NA_U32>(offsets.il2cpp_class_name),
+                                  value_name, sizeof(value_name)))
+            continue;
+          ++reported;
+          logf("  +0x%03X -> 0x%llX %s\n", field,
+               static_cast<unsigned long long>(*value), value_name);
+          if (!std::strstr(value_name, "Dictionary")) continue;
+          if (*value > UINT64_MAX - offsets.dict_entries ||
+              *value > UINT64_MAX - offsets.dict_count) continue;
+          const auto dict_entries = mem.ptr(*value + offsets.dict_entries);
+          const auto dict_count = mem.i32(*value + offsets.dict_count);
+          if (!dict_entries || !dict_count || *dict_count < 0) continue;
+          uint64_t dict_capacity = 0;
+          if (*dict_entries <= UINT64_MAX - offsets.array_length) {
+            const auto capacity_read =
+                mem.ptr(*dict_entries + offsets.array_length);
+            if (capacity_read) dict_capacity = *capacity_read;
+          }
+          logf("    dict count=%d capacity=%llu\n", *dict_count,
+               static_cast<unsigned long long>(dict_capacity));
+          // Sample the values so a loot/object class name becomes visible.
+          const auto sample_header = nzl::read_dict(mem, *value, offsets);
+          if (!sample_header) continue;
+          unsigned sampled = 0;
+          for (int index = 0;
+               static_cast<uint32_t>(index) < sample_header->array_length &&
+               sampled < 6;
+               ++index) {
+            const auto entry = nzl::dict_value_at(mem, *sample_header, index, offsets);
+            if (!entry) continue;
+            const auto entry_class = mem.ptr(*entry);
+            char entry_name[NA_KLASS_MAX_NAME_BYTES]{};
+            if (!entry_class ||
+                !na_klass_read_name(klass_read, read_ctx, *entry_class,
+                                    static_cast<NA_U32>(offsets.il2cpp_class_name),
+                                    entry_name, sizeof(entry_name)))
+              continue;
+            logf("    slot[%d] 0x%llX %s\n", index,
+                 static_cast<unsigned long long>(*entry), entry_name);
+            ++sampled;
+          }
+        }
+        logf("[sweep] named_fields=%u\n", reported);
+      }
       logf("[probe] RESULT: ROOT_OK - exact owner fingerprint, TypeInfo names, full class chain, and Dictionary bounds validated.\n");
       if (!transport) result_code = 5;
     }

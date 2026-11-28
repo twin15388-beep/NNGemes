@@ -105,7 +105,25 @@ BattleCharacter ............ NAME_OK (все семь)
 [camera] vectors=OK pos=(-41.10,7.42,-30.88) fwd=(0.10,-0.40,-0.91)
 [snapshot] roster_count=9 valid_pos=3 drawn=1 draw_commands=2
   #23844 alive pos=(-40.21,3.94,-35.77) dist=6.1m
+  entry[0] id=23844 entity=0x... class=BattleCharacter
+  entry[1] id=24157 entity=0x... class=BattleCharacter
+[snapshot] covered=9 of roster=9, with_position=9
+[sweep] WorldEntitiesModel=0x... fields 0x0..0x200
+  +0x018 -> 0x... System.Collections.Generic.Dictionary`2
+    dict count=41 capacity=61
+    slot[3] 0x... LootModel
+[sweep] named_fields=6
 ```
+
+`entry[...]` печатается по одной строке на каждого игрока из ростера: адрес
+объекта и его имя класса. Если `covered` меньше `roster_count` или рядом стоит
+`NOT-A-POINTER` / `class=<unreadable>` — это ответ на «не всех видит», и он
+уходит в отчёт как есть.
+
+`[sweep]` перебирает поля `WorldEntitiesModel` с шагом 8 и печатает класс
+за каждым читаемым указателем. Словари печатаются с `count/capacity` и
+несколькими значениями — по их именам видно, какое поле держит лут, и это
+единственный способ получить офсет добычи из живой игры, а не из чужого EXE.
 
 Этого не хватало для ESP: транспорт, PEB-walk, профиль, имена классов, корень
 цепочки, словарь и камера читаются из живой игры за 55 вызовов скана.

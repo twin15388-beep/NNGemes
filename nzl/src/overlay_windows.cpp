@@ -253,7 +253,9 @@ static std::vector<uint64_t> dict_values(Ctx& c, uint64_t dict,
     stats->capacity = static_cast<uint32_t>(*capacity);
   }
   const uint64_t array_data = *entries + c.off.array_data;
-  const int total = *count;
+  // The live population is *count, but the slots it occupies span the array
+  // capacity. Scanning only *count slots is why players went missing.
+  const int total = static_cast<int>(*capacity);
   for (int base = 0; base < total; base += 24) {
     const int n = std::min(24, total - base);
     std::vector<NaItem> items;

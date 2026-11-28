@@ -85,7 +85,9 @@ std::vector<PlayerSnap> snapshot_players(const IMemory& memory,
   const auto header = read_dict(memory, chain.dict, offsets);
   if (!header) return players;
 
-  for (int index = 0; index < header->count; ++index) {
+  // Span the entries array, not the live count: holes are skipped by
+  // dict_value_at, and an entry that moved past Count still gets drawn.
+  for (int index = 0; static_cast<uint32_t>(index) < header->array_length; ++index) {
     const auto character = dict_value_at(memory, *header, index, offsets);
     if (!character) continue;
     if (expected_character_class) {

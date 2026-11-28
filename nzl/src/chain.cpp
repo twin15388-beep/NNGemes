@@ -133,9 +133,12 @@ std::optional<DictHeader> read_dict(const IMemory& memory, uint64_t dict,
 std::optional<uint64_t> dict_value_at(const IMemory& memory,
                                       const DictHeader& header, int index,
                                       const Offsets& offsets) {
+  // Dictionary.Count is the number of live entries; the entries array is sized
+  // to ArrayLength and freed slots stay as holes (hash < 0). Live entries can
+  // therefore sit anywhere in [0, array_length) - bounding the scan by Count
+  // hides every player that landed past the first Count slots.
   if (index < 0 || header.count < 0 ||
       static_cast<uint32_t>(index) >= header.array_length ||
-      index >= header.count ||
       static_cast<uint64_t>(header.count) > header.array_length ||
       !plausible_ptr(header.entries) || offsets.dict_stride == 0)
     return std::nullopt;
