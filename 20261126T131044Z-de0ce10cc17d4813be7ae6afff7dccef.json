@@ -1,9 +1,0 @@
-{
-  "version": "flicker",
-  "code": "DIAG",
-  "mod": "flicker",
-  "modRva": "",
-  "addr": "",
-  "win": "",
-  "log": "enum: 0 Drawn 1 Disabled 2 MissingFrame 3 InvalidCamera 4 CameraChanged 5 StaleFrame 6 NoEligible 7 NoPose 8 StalePose 9 Reanchor 10 Bounds\n[294.75] drop 1072 ms, 111 frames, hidden=0 players=4 eligible=3 poses=3 fresh=3 frameAge=3 boneAge=18 fg=13248 attached=13248 first=Bounds cat: noFocus=0 iconic=0 hwndLost=0 otherWin=0 ghost=0 frameDt(min/mean/max): 7.1/9.7/12.2 ms sampler: rigs=3 att=0 acc=0 held=0 rej=0 rebind=0 exp=0 anchRej=0 boundsRej=3 cull=0 netCull=0 natFail=0 natRec=0 noBonesOnScreenFrames=0 fgStart: pid=13248 tid=9692 cls=\"UnityWndClass\" ttl=\"ROB RUN\" fgEnd: pid=13248 tid=9692 cls=\"UnityWndClass\" ttl=\"ROB RUN\" reasons: Bounds=111\n[298.62] drop 1600 ms, 178 frames, hidden=0 players=4 eligible=3 poses=3 fresh=3 frameAge=7 boneAge=21 fg=13248 attached=13248 first=Bounds cat: noFocus=0 iconic=0 hwndLost=0 otherWin=0 ghost=0 frameDt(min/mean/max): 4.3/9.0/14.2 ms sampler: rigs=3 att=2 acc=2 held=0 rej=0 rebind=0 exp=0 anchRej=0 boundsRej=3 cull=2 netCull=2 natFail=0 natRec=0 noBonesOnScreenFrames=0 fgStart: pid=13248 tid=9692 cls=\"UnityWndClass\" ttl=\"ROB RUN\" fgEnd: pid=13248 tid=9692 cls=\"UnityWndClass\" ttl=\"ROB RUN\" reasons: Bounds=178\n"
-}

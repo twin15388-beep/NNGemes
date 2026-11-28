@@ -1,9 +1,0 @@
-{
-  "version": "flicker",
-  "code": "DIAG",
-  "mod": "flicker",
-  "modRva": "",
-  "addr": "",
-  "win": "",
-  "log": "enum: 0 Drawn 1 Disabled 2 MissingFrame 3 InvalidCamera 4 CameraChanged 5 StaleFrame 6 NoEligible 7 NoPose 8 StalePose 9 Reanchor 10 Bounds\n[262.65] drop 3538 ms, 171 frames, hidden=0 players=1 eligible=0 poses=0 fresh=0 frameAge=5 boneAge=0 fg=13248 attached=13248 first=NoEligible cat: noFocus=0 iconic=0 hwndLost=0 otherWin=67 ghost=67 frameDt(min/mean/max): 0.7/20.6/648.1 ms sampler: rigs=0 att=0 acc=0 held=0 rej=0 rebind=0 exp=0 anchRej=0 boundsRej=0 cull=0 netCull=0 natFail=0 natRec=0 noBonesOnScreenFrames=0 fgStart: pid=11336 tid=13664 cls=\"external-rust-base\" ttl=\"Hidden Overlay\" fgEnd: pid=13248 tid=9692 cls=\"UnityWndClass\" ttl=\"ROB RUN\" reasons: NoEligible=171\n"
-}

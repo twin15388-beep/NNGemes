@@ -1,9 +1,0 @@
-{
-  "version": "flicker",
-  "code": "DIAG",
-  "mod": "flicker",
-  "modRva": "",
-  "addr": "",
-  "win": "",
-  "log": "enum: 0 Drawn 1 Disabled 2 MissingFrame 3 InvalidCamera 4 CameraChanged 5 StaleFrame 6 NoEligible 7 NoPose 8 StalePose 9 Reanchor 10 Bounds\n[449.54] drop 5071 ms, 98 frames, hidden=98 players=5 eligible=4 poses=2 fresh=2 frameAge=4 boneAge=4 fg=2408 attached=13248 first=Drawn cat: noFocus=0 iconic=0 hwndLost=0 otherWin=98 ghost=0 frameDt(min/mean/max): 1.4/51.3/539.4 ms sampler: rigs=4 att=2 acc=0 held=2 rej=0 rebind=0 exp=0 anchRej=0 boundsRej=0 cull=0 netCull=0 natFail=0 natRec=0 noBonesOnScreenFrames=0 fgStart: pid=2408 tid=4072 cls=\"Chrome_WidgetWin_1\" ttl=\"Arena | Benchmark & Compare the B\" fgEnd: pid=13248 tid=9692 cls=\"UnityWndClass\" ttl=\"ROB RUN\" reasons:\n"
-}

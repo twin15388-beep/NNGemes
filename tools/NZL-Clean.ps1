@@ -1,115 +1,172 @@
 ﻿<#
 NZL Studio - чистка рабочей папки.
 
-По умолчанию НИЧЕГО НЕ УДАЛЯЕТ: только показывает, что удалил бы и сколько
-места это освободит. Удаляет только с -Apply.
+По умолчанию ничего не делает: печатает, что убрал бы, по категориям.
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File tools\NZL-Clean.ps1
-  powershell -NoProfile -ExecutionPolicy Bypass -File tools\NZL-Clean.ps1 -Apply
-  powershell -NoProfile -ExecutionPolicy Bypass -File tools\NZL-Clean.ps1 -Apply -KeepDumps
+  .\NZL.bat clean                  пробный прогон
+  .\NZL.bat clean -Apply           перенести мусор в _trash-<дата> (можно вернуть)
+  .\NZL.bat clean -Apply -Delete   удалить сразу, без корзины
+  .\NZL.bat clean -Apply -KeepDumps  дампы BSOD оставить в crash_info\
 
-Что удаляется (всё это воспроизводимо одной сборкой):
-  build-nzl\                 дерево CMake/MSVC
-  build\  cpp\build\         старые деревья
-  .vs\                       кеш Visual Studio
-  NZL-Studio*.bat            упакованные лаунчеры прошлых сборок
-  NZL-Studio-Package.zip
-  driver_build.log  build_all.log  nzl_probe.txt  nzl_overlay.txt
-  crash_info\                разборы BSOD (дампы тоже, если не -KeepDumps)
-  nzl_report_*.txt/.zip      отчёты прошлых прогонов
+Почему корзина, а не удаление: перенос мгновенный и обратимый, а удаление
+1.5 ГБ старых сборок необратимо. Осмотрел _trash-<дата> - удали папку целиком.
 
-Что НЕ трогается никогда:
-  исходники, HANDOFF.md, docs\, data\, tools\
-  requests.jsonl и 20261126T*.json  (аналитические копии, удаляются вручную)
-  driver.sys в nzl\driver\   (это артефакт сборки, но 18 КБ, руками не мешает)
+Никогда не трогает: nzl\, tools\, tests\, docs\, NZL.bat, README.md,
+HANDOFF.md, config.ini, .gitattributes, .gitignore, .git\, а также файлы под
+контролем git (robrun.py, RobRun.exe, START.bat, NZL-START.bat): их удаление
+сломало бы рабочую копию, для них есть отдельное решение.
 #>
 param(
     [switch]$Apply,
+    [switch]$Delete,
     [switch]$KeepDumps
 )
 
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 function Write-Nzl([string]$m) { Write-Host "[NZL] $m" -ForegroundColor Magenta }
+function Write-Dim([string]$m) { Write-Host "      $m" -ForegroundColor DarkGray }
+
 $root = Split-Path $PSScriptRoot -Parent
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$trash = Join-Path $root ("_trash-" + $stamp)
 
 function Get-SizeOf([string]$path) {
-    if (-not (Test-Path $path)) { return 0 }
-    $item = Get-Item $path -Force
+    if (-not (Test-Path -LiteralPath $path)) { return [int64]0 }
+    $item = Get-Item -LiteralPath $path -Force
     if ($item.PSIsContainer) {
-        $sum = (Get-ChildItem $path -Recurse -Force -File -ErrorAction SilentlyContinue |
+        $sum = (Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue |
                 Measure-Object -Property Length -Sum).Sum
         if ($sum) { return [int64]$sum }
-        return 0
+        return [int64]0
     }
     return [int64]$item.Length
 }
 
-$dirs = @("build-nzl", "build", "cpp\build", ".vs")
-$files = @("NZL-Studio-Package.zip", "driver_build.log", "build_all.log",
-           "nzl_probe.txt", "nzl_overlay.txt")
-
-$targets = New-Object System.Collections.Generic.List[object]
-foreach ($d in $dirs) {
-    $p = Join-Path $root $d
-    if (Test-Path $p) { $targets.Add([pscustomobject]@{ Path = $p; Kind = "dir"; Size = (Get-SizeOf $p) }) }
-}
-foreach ($f in $files) {
-    $p = Join-Path $root $f
-    if (Test-Path $p) { $targets.Add([pscustomobject]@{ Path = $p; Kind = "file"; Size = (Get-SizeOf $p) }) }
-}
-Get-ChildItem $root -Filter "NZL-Studio*.bat" -File -ErrorAction SilentlyContinue |
-    ForEach-Object { $targets.Add([pscustomobject]@{ Path = $_.FullName; Kind = "file"; Size = [int64]$_.Length }) }
-Get-ChildItem $root -Filter "nzl_report_*" -File -ErrorAction SilentlyContinue |
-    ForEach-Object { $targets.Add([pscustomobject]@{ Path = $_.FullName; Kind = "file"; Size = [int64]$_.Length }) }
-
-$crash = Join-Path $root "crash_info"
-if (Test-Path $crash) {
-    $crashSize = Get-SizeOf $crash
-    if ($KeepDumps) {
-        $dmps = Get-ChildItem $crash -Filter "*.dmp" -File -ErrorAction SilentlyContinue
-        foreach ($d in $dmps) {
-            $targets.Add([pscustomobject]@{ Path = $d.FullName; Kind = "file"; Size = [int64]$d.Length })
+function Resolve-Pattern([string]$pattern) {
+    $found = New-Object System.Collections.Generic.List[object]
+    $full = Join-Path $root $pattern
+    if ($pattern -match "[?*]") {
+        $parentPart = Split-Path $pattern -Parent
+        if ([string]::IsNullOrEmpty($parentPart)) {
+            $parent = $root
+        } else {
+            $parent = Join-Path $root $parentPart
         }
-        Get-ChildItem $crash -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -ne ".dmp" } |
-            ForEach-Object { $targets.Add([pscustomobject]@{ Path = $_.FullName; Kind = "file"; Size = [int64]$_.Length }) }
-        Write-Nzl "-KeepDumps: .dmp файлы останутся в crash_info\, удалю только тексты разбора."
-    } else {
-        $targets.Add([pscustomobject]@{ Path = $crash; Kind = "dir"; Size = $crashSize })
+        if (Test-Path -LiteralPath $parent) {
+            $leaf = Split-Path $pattern -Leaf
+            Get-ChildItem -LiteralPath $parent -Filter $leaf -Force -ErrorAction SilentlyContinue |
+                ForEach-Object { $found.Add($_) }
+        }
+    } elseif (Test-Path -LiteralPath $full) {
+        $found.Add((Get-Item -LiteralPath $full -Force))
+    }
+    return $found
+}
+
+# Категории перечислены явно и узко: ни одно правило не может случайно
+# захватить исходники, потому что шаблоны начинаются с конкретных имён.
+$groups = @(
+    @{ Name = "Старые сборки";                  Items = @("build", "build-nzl", "build-nzl-old-*", "cpp\build", ".vs") },
+    @{ Name = "Логи сборки";                    Items = @("driver_build.log", "build_all.log", "driver\_build*.log") },
+    @{ Name = "Отчёты и пробы";                 Items = @("nzl_report_*", "nzl_probe*.txt", "nzl_overlay.txt", "nzl_probe", "nzl_info", "nzl_info.zip") },
+    @{ Name = "Разборы падений";                Items = @("crash_info") },
+    @{ Name = "Артефакты старого локального API"; Items = @("2026*T*.json", "requests.jsonl") },
+    @{ Name = "Упакованные лаунчеры и черновики"; Items = @("NZL-Studio*.bat", "NZL-Studio-Package.zip", "disasm.txt") },
+    @{ Name = "Прошлые корзины";                Items = @("_trash-*") }
+)
+
+$seen = New-Object System.Collections.Generic.HashSet[string]
+$rows = New-Object System.Collections.Generic.List[object]
+foreach ($group in $groups) {
+    foreach ($pattern in $group.Items) {
+        foreach ($item in (Resolve-Pattern $pattern)) {
+            if (-not $seen.Add($item.FullName)) { continue }
+            if ($KeepDumps -and $item.PSIsContainer -and $item.Name -eq "crash_info") {
+                Write-Nzl "-KeepDumps: crash_info\ оставлен, дампы не отправляются в корзину."
+                continue
+            }
+            $rows.Add([pscustomobject]@{
+                Category = $group.Name
+                Path     = $item.FullName
+                Name     = $item.Name
+                IsDir    = [bool]$item.PSIsContainer
+                Size     = (Get-SizeOf $item.FullName)
+            })
+        }
     }
 }
 
-if ($targets.Count -eq 0) {
-    Write-Nzl "Чистить нечего: рабочая папка уже пустая в смысле артефактов."
-    exit 0
-}
-
-$total = ($targets | Measure-Object -Property Size -Sum).Sum
-Write-Nzl ("Найдено {0} объектов, {1:N1} МБ:" -f $targets.Count, ($total / 1MB))
-foreach ($t in ($targets | Sort-Object -Property Size -Descending)) {
-    $rel = $t.Path.Substring($root.Length).TrimStart('\')
-    Write-Host ("  {0,10:N1} МБ  {1}" -f ($t.Size / 1MB), $rel)
+if ($rows.Count -eq 0) {
+    Write-Nzl "Мусора не найдено: папка уже чистая."
+} else {
+    $totalMb = (($rows | Measure-Object -Property Size -Sum).Sum) / 1MB
+    Write-Nzl ("Мусор: {0} объектов, {1:N1} МБ" -f $rows.Count, $totalMb)
+    foreach ($group in $groups) {
+        $inGroup = @($rows | Where-Object { $_.Category -eq $group.Name })
+        if ($inGroup.Count -eq 0) { continue }
+        $groupMb = (($inGroup | Measure-Object -Property Size -Sum).Sum) / 1MB
+        Write-Host ("  {0}  ({1} шт., {2:N1} МБ)" -f $group.Name, $inGroup.Count, $groupMb) -ForegroundColor Cyan
+        $shown = 0
+        foreach ($row in ($inGroup | Sort-Object -Property Size -Descending)) {
+            if ($shown -ge 6) {
+                Write-Dim ("... и ещё {0}" -f ($inGroup.Count - $shown))
+                break
+            }
+            $rel = $row.Path.Substring($root.Length).TrimStart("\")
+            Write-Dim ("{0,9:N1} МБ  {1}" -f ($row.Size / 1MB), $rel)
+            $shown++
+        }
+    }
 }
 
 if (-not $Apply) {
-    Write-Nzl "Это был пробный прогон. Ничего не удалено."
-    Write-Nzl "Удалить: tools\NZL-Clean.ps1 -Apply"
+    Write-Nzl "Это пробный прогон. Ничего не изменено."
+    Write-Nzl "Убрать в корзину:  .\NZL.bat clean -Apply"
+    Write-Nzl "Удалить сразу:     .\NZL.bat clean -Apply -Delete"
     exit 0
 }
+if ($rows.Count -eq 0) { exit 0 }
 
+$moved = 0
 $failed = 0
-foreach ($t in $targets) {
+foreach ($row in $rows) {
     try {
-        Remove-Item -LiteralPath $t.Path -Recurse -Force -ErrorAction Stop
+        $isOldTrash = $row.Name -like "_trash-*"
+        if ($Delete -or $isOldTrash) {
+            Remove-Item -LiteralPath $row.Path -Recurse -Force -ErrorAction Stop
+        } else {
+            $rel = $row.Path.Substring($root.Length).TrimStart("\")
+            $dest = Join-Path $trash $rel
+            $destDir = Split-Path $dest -Parent
+            if (-not (Test-Path -LiteralPath $destDir)) {
+                New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+            }
+            Move-Item -LiteralPath $row.Path -Destination $dest -Force -ErrorAction Stop
+        }
+        $moved++
     } catch {
         $failed++
-        Write-Nzl "не удалось удалить $($t.Path): $($_.Exception.Message)"
+        Write-Nzl ("не удалось: {0} - {1}" -f $row.Name, $_.Exception.Message)
     }
 }
-$left = $targets | Where-Object { Test-Path $_.Path }
-Write-Nzl ("Удалено {0} из {1}, освобождено {2:N1} МБ." -f ($targets.Count - $failed), $targets.Count, ($total / 1MB))
-if ($left) {
-    Write-Nzl "Осталось (занято другим процессом - закрой VS/игру/оверлей и повтори):"
-    foreach ($l in $left) { Write-Host "  $($l.Path)" }
+
+if ($Delete) {
+    Write-Nzl ("Удалено {0} из {1} объектов." -f $moved, $rows.Count)
+} else {
+    Write-Nzl ("Убрано в корзину {0} из {1} объектов." -f $moved, $rows.Count)
+    Write-Nzl ("Корзина: {0}" -f $trash)
+    Write-Nzl "Проверил - удали папку корзины целиком."
 }
-Write-Nzl "Дальше: .\NZL.bat build  (пересоберёт всё с нуля, 1-2 минуты)"
+if ($failed -gt 0) {
+    Write-Nzl "Часть не удалась: закрой Visual Studio, игру и оверлей и повтори."
+}
+
+Write-Nzl "В рабочей папке осталось:"
+$keep = Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue |
+        Sort-Object -Property @{ Expression = { -not $_.PSIsContainer } }, Name
+foreach ($item in $keep) {
+    $suffix = ""
+    if ($item.PSIsContainer) { $suffix = "\" }
+    Write-Dim ($item.Name + $suffix)
+}
+Write-Nzl "Где что искать: docs\LIVE-RUN.md - порядок запуска, HANDOFF.md - состояние работы."

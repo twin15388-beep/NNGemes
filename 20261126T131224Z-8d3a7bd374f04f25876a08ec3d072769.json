@@ -1,9 +1,0 @@
-{
-  "version": "beta",
-  "code": "DIAG",
-  "mod": "fastloot",
-  "modRva": "",
-  "addr": "",
-  "win": "",
-  "log": "[415.79] fast loot on, speed x5, memoryWrite=1\n[415.79] view descriptions 0x29586362AF0, timeToCell=0.1450\n[415.79] patched 7 floats so far, timeToCell now 0.0290\n"
-}
