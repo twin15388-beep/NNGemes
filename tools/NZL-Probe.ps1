@@ -19,8 +19,9 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $reg = "HKLM:\SYSTEM\NaCoreFilter"
 if (-not (Test-Path $reg)) {
     Write-Nzl "FAIL: драйвер не загружен (HKLM\SYSTEM\NaCoreFilter отсутствует)."
-    Write-Nzl "После перезагрузки manual-map драйвер НЕ выживает. Сначала:"
-    Write-Nzl "  powershell -ExecutionPolicy Bypass -File tools\NZL-LoadDriver.ps1"
+    Write-Nzl "После перезагрузки manual-map драйвер НЕ выживает. Сначала, от администратора:"
+    Write-Nzl "  cd `"$root`""
+    Write-Nzl "  .\NZL.bat load"
     exit 5
 }
 $loaded = Get-ItemProperty $reg -ErrorAction SilentlyContinue

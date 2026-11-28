@@ -37,7 +37,17 @@ if (-not $SkipDumpCheck) {
 $reg = "HKLM:\SYSTEM\NaCoreFilter"
 if (-not (Test-Path $reg)) {
     Write-Nzl "FAIL: драйвер не загружен (HKLM\SYSTEM\NaCoreFilter отсутствует)."
-    Write-Nzl "Сначала: powershell -ExecutionPolicy Bypass -File tools\NZL-LoadDriver.ps1"
+    Write-Nzl "Manual-map драйвер не переживает перезагрузку Windows: после ребута его грузят заново."
+    $driverSys = Join-Path $root "nzl\driver\driver.sys"
+    if (-not (Test-Path -LiteralPath $driverSys)) {
+        Write-Nzl "driver.sys ещё не собран. Сначала:"
+        Write-Nzl "  cd `"$root`""
+        Write-Nzl "  .\NZL.bat build"
+    } else {
+        Write-Nzl "Загрузить (окно PowerShell должно быть от администратора), ДО запуска игры:"
+        Write-Nzl "  cd `"$root`""
+        Write-Nzl "  .\NZL.bat load"
+    }
     exit 5
 }
 $loaded = Get-ItemProperty $reg -ErrorAction SilentlyContinue
