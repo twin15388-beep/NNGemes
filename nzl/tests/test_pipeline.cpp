@@ -3,6 +3,27 @@
 static int fails=0;
 #define C(x) do{ if(!(x)){ std::printf("FAIL %s\n",#x); fails++; } else std::printf("ok: %s\n",#x); }while(0)
 int main(){
+  const nzl::Vec3f fwd{0,0,1}, right{1,0,0}, up{0,1,0};
+  const float identity_q[4] = {0,0,0,1};
+  const auto aligned_basis = nzl::select_camera_basis(identity_q, fwd, right, up, true);
+  C(aligned_basis.source==nzl::CameraBasisSource::Quaternion);
+  C(aligned_basis.axes_valid && aligned_basis.quaternion_valid);
+  C(aligned_basis.quaternion_axis_alignment>0.99f && !aligned_basis.disagreement);
+  const float yaw90_q[4] = {0,0.70710678f,0,0.70710678f};
+  const auto mismatched_basis = nzl::select_camera_basis(yaw90_q, fwd, right, up, true);
+  C(mismatched_basis.source==nzl::CameraBasisSource::RawAxes);
+  C(mismatched_basis.disagreement && mismatched_basis.quaternion_axis_alignment<0.90f);
+  C(mismatched_basis.fwd.z>0.99f);
+  const auto axis_preference = nzl::select_camera_basis(identity_q, fwd, right, up, false);
+  C(axis_preference.source==nzl::CameraBasisSource::RawAxes);
+  const float invalid_q[4] = {0,0,0,0};
+  const auto axes_fallback = nzl::select_camera_basis(invalid_q, fwd, right, up, true);
+  C(axes_fallback.source==nzl::CameraBasisSource::RawAxes && !axes_fallback.quaternion_valid);
+  const auto quat_fallback = nzl::select_camera_basis(identity_q, {}, {}, {}, true);
+  C(quat_fallback.source==nzl::CameraBasisSource::Quaternion && !quat_fallback.axes_valid);
+  const auto invalid_basis = nzl::select_camera_basis(invalid_q, {}, {}, {}, true);
+  C(invalid_basis.source==nzl::CameraBasisSource::Invalid);
+
   nzl::FakeMemory m; nzl::Offsets o;
   auto blob=[&](uint64_t a){ m.bytes[a]=std::vector<uint8_t>(0x400,0); };
   uint64_t ue=0x100000, game=0x200000, gm=0x300000, bm=0x400000, be=0x500000, we=0x600000, dict=0x700000, entries=0x800000, cam=0x900000, ch=0xA00000, tr=0xB00000;

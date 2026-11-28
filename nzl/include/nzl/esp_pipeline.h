@@ -11,6 +11,23 @@ struct CameraView {
   float head_height_m = 1.80f;
   int width = 1920, height = 1080;
 };
+enum class CameraBasisSource { Invalid, RawAxes, Quaternion };
+struct CameraBasisSelection {
+  Vec3f fwd{}, right{}, up{};
+  CameraBasisSource source = CameraBasisSource::Invalid;
+  float quaternion_axis_alignment = -1.0f; // mean dot product: 1 = identical bases
+  bool axes_valid = false;
+  bool quaternion_valid = false;
+  bool disagreement = false;
+};
+// Cross-check the profile-verified Forward/Right/Up vectors against the
+// lower-confidence LookAtOrientation quaternion. Prefer the quaternion only
+// when requested and it agrees with a valid raw basis (mean dot >= 0.90).
+CameraBasisSelection select_camera_basis(const float quaternion_xyzw[4],
+                                         const Vec3f& axis_fwd,
+                                         const Vec3f& axis_right,
+                                         const Vec3f& axis_up,
+                                         bool prefer_quaternion);
 struct PlayerSnap {
   uint64_t addr = 0; int32_t id = 0; Vec3f pos{}; bool dead = false; float dist = 0;
   int32_t hp = -1;    // -1 = unknown (HP chain marked unverified until live check)

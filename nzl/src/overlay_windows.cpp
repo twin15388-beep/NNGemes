@@ -77,22 +77,6 @@ static bool klass_name_is(const nzl::IMemory& m, uint64_t klass,
   name[sizeof(name) - 1] = 0;
   return std::strcmp(name, want) == 0;
 }
-static nzl::Vec3f normalize(nzl::Vec3f v) {
-  float l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-  return l > 0.001f ? nzl::Vec3f{v.x / l, v.y / l, v.z / l} : v;
-}
-// Unity quaternion (x,y,z,w) -> camera basis (forward = rotation * +Z).
-static bool basis_from_quat_values(const float q[4],
-                                   nzl::Vec3f& fwd, nzl::Vec3f& right, nzl::Vec3f& up) {
-  float x = q[0], y = q[1], z = q[2], w = q[3];
-  float len = std::sqrt(x * x + y * y + z * z + w * w);
-  if (len < 0.5f || len > 1.5f) return false;
-  x /= len; y /= len; z /= len; w /= len;
-  fwd = normalize({2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)});
-  right = normalize({1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)});
-  up = normalize({2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)});
-  return true;
-}
 struct RenderEnt {
   float hx = 0, hy = 0, fx = 0, fy = 0; // head / feet screen
   float ax = 0, ay = 0;                 // aim point screen (selected bone)
@@ -742,7 +726,7 @@ static const MenuOption kRadarOptions[] = {
   {OptionId::RadarRange, "Radar range", OptionKind::Slider, 30, 500, 10},
 };
 static const MenuOption kMiscOptions[] = {
-  {OptionId::BasisQuat, "Quaternion camera basis", OptionKind::Toggle},
+  {OptionId::BasisQuat, "Prefer quaternion (cross-check)", OptionKind::Toggle},
   {OptionId::MenuKey, "Menu hotkey", OptionKind::Cycle},
 };
 static const MenuOption* page_options(int tab, size_t& count) {
@@ -1672,17 +1656,12 @@ static void esp_worker(Ctx* ui) {
         continue;
       }
       camera_position_fail_streak = 0;
-      bool basis_ok = work.basis_quat && basis_from_quat_values(quaternion, cfwd, cright, cup);
-      if (!basis_ok) {
-        cfwd = normalize({forward_raw[0], forward_raw[1], forward_raw[2]});
-        cright = normalize({right_raw[0], right_raw[1], right_raw[2]});
-        cup = normalize({up_raw[0], up_raw[1], up_raw[2]});
-      }
-      const auto unit_vector_ok = [](const nzl::Vec3f& v) {
-        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
-               (v.x * v.x + v.y * v.y + v.z * v.z) > 0.5f;
-      };
-      if (!unit_vector_ok(cfwd) || !unit_vector_ok(cright) || !unit_vector_ok(cup)) {
+      const auto basis = nzl::select_camera_basis(
+          quaternion,
+          {forward_raw[0], forward_raw[1], forward_raw[2]},
+          {right_raw[0], right_raw[1], right_raw[2]},
+          {up_raw[0], up_raw[1], up_raw[2]}, work.basis_quat);
+      if (basis.source == nzl::CameraBasisSource::Invalid) {
         ++camera_basis_failures;
         ++camera_basis_fail_streak;
         if (camera_basis_fail_streak == 5)
@@ -1690,6 +1669,7 @@ static void esp_worker(Ctx* ui) {
         Sleep(100);
         continue;
       }
+      cfwd = basis.fwd; cright = basis.right; cup = basis.up;
       camera_basis_fail_streak = 0;
       work.cam_fwd = cfwd; work.cam_right = cright; work.radar_cam = cpos;
       auto players = snapshot_players(work, cpos, player_cache, now);
@@ -1777,27 +1757,37 @@ static void esp_worker(Ctx* ui) {
                       player_cache.dictionary_active_values);
       else
         std::snprintf(dictionary_status, sizeof(dictionary_status), "DICT INVALID");
-      char status[384];
+      char basis_status[64]{};
+      const char* basis_source = basis.source == nzl::CameraBasisSource::Quaternion ? "Q" : "AXIS";
+      if (basis.axes_valid && basis.quaternion_valid)
+        std::snprintf(basis_status, sizeof(basis_status), "BASIS %s%s QA %.2f",
+                      basis_source, basis.disagreement ? "!" : "",
+                      basis.quaternion_axis_alignment);
+      else
+        std::snprintf(basis_status, sizeof(basis_status), "BASIS %s QA n/a", basis_source);
+      char status[512];
       if (measured_fps > 0.0)
         std::snprintf(status, sizeof(status),
-                      "DATA %.1f/s | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu",
+                      "DATA %.1f/s | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu | FOV %.0f VIEW %dx%d %s",
                       measured_fps, paint_fps, (unsigned long long)last_work_ms,
                       dictionary_status, player_cache.entries.size(), players.size(),
                       work.render.size(), culled_dead, culled_distance, culled_view,
                       culled_edge, player_cache.dictionary_read_failures,
                       (unsigned long long)camera_read_failures,
                       (unsigned long long)camera_position_failures,
-                      (unsigned long long)camera_basis_failures);
+                      (unsigned long long)camera_basis_failures,
+                      work.fov, view.width, view.height, basis_status);
       else
         std::snprintf(status, sizeof(status),
-                      "DATA measuring | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu",
+                      "DATA measuring | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu | FOV %.0f VIEW %dx%d %s",
                       paint_fps, (unsigned long long)last_work_ms, dictionary_status,
                       player_cache.entries.size(), players.size(), work.render.size(),
                       culled_dead, culled_distance, culled_view, culled_edge,
                       player_cache.dictionary_read_failures,
                       (unsigned long long)camera_read_failures,
                       (unsigned long long)camera_position_failures,
-                      (unsigned long long)camera_basis_failures);
+                      (unsigned long long)camera_basis_failures,
+                      work.fov, view.width, view.height, basis_status);
       HWND menu_wnd = nullptr;
       bool menu_open = false;
       {
