@@ -2210,7 +2210,17 @@ int main() {
   if (!ctx.overlay_wnd || !ctx.menu_wnd) { std::printf("[NZL] UI window creation failed.\n"); return 10; }
   SetLayeredWindowAttributes(ctx.overlay_wnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
   ShowWindow(ctx.overlay_wnd, SW_HIDE);
-  ShowWindow(ctx.menu_wnd, SW_HIDE);
+  // Show the menu at startup. An overlay that runs with no visible window is
+  // indistinguishable from an overlay that failed to start: the owner ran it,
+  // saw nothing, and asked whether it was supposed to open a menu at all
+  // (2026-11-28). The overlay window itself still stays hidden until the game
+  // window exists.
+  ShowWindow(ctx.menu_wnd, SW_SHOW);
+  set_menu_visible(true);
+  std::printf("[NZL] menu window is open. INSERT toggles it, END exits.\n"
+              "[NZL] ESP draws only when ROB RUN.exe is running in Windowed or "
+              "Borderless mode; until then this menu just waits.\n");
+  std::fflush(stdout);
   std::thread worker(esp_worker, &ctx);
   ULONGLONG last_window_check = 0;
   DWORD window_pid = 0;
