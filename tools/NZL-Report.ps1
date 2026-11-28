@@ -254,7 +254,7 @@ try {
         # numbers out by shape instead of trusting the words.
         $hex = [regex]::Matches($e.Message, '0x[0-9a-fA-F]{8,16}')
         if ($hex.Count -gt 0) {
-            Add-Line ("  parsed: code=0x{0}  args={1}" -f $hex[0].Value, (($hex | Select-Object -Skip 1 | ForEach-Object { $_.Value }) -join ' '))
+            Add-Line ("  parsed: code={0}  args={1}" -f $hex[0].Value, (($hex | Select-Object -Skip 1 | ForEach-Object { $_.Value }) -join ' '))
         }
     }
 } catch { Add-Line "BugCheck events: none/failed ($($_.Exception.Message))" }

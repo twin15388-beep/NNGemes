@@ -600,14 +600,24 @@ done:
 #define NA_KERNEL_PTR_BASE 0xFFFF800000000000ULL
 #define NA_IO_TYPE_DRIVER  3
 
-static BOOLEAN NaDriverObjectWritable(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
+static BOOLEAN NaWireUnload(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
 {
     if (!ARGUMENT_PRESENT(drv) || !ARGUMENT_PRESENT(reg)) return FALSE;
     if ((ULONG_PTR)drv < (ULONG_PTR)NA_KERNEL_PTR_BASE) return FALSE;
     if (!MmIsAddressValid(drv)) return FALSE;
-    if (drv->Type != NA_IO_TYPE_DRIVER) return FALSE;
-    if ((SIZE_T)drv->Size != sizeof(DRIVER_OBJECT)) return FALSE;
-    return TRUE;
+    // 28.11 bugcheck: 0x1E (0xC0000005, 0xFFFFC58319802016, 1, 0x68). The
+    // manual mapper handed us 0xFFFFC58319801FAE - a kernel-range pointer
+    // into the PTE region, 0x68 bytes below the write target. That address
+    // passes a range check and can pass MmIsAddressValid, so even the probe
+    // reads are inside SEH: a bad driver object must degrade, not bugcheck.
+    __try {
+        if (drv->Type != NA_IO_TYPE_DRIVER) return FALSE;
+        if ((SIZE_T)drv->Size != sizeof(DRIVER_OBJECT)) return FALSE;
+        drv->DriverUnload = NaUnload;
+        return TRUE;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
@@ -615,7 +625,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
     // A service/sc.exe load gets a real driver object and wants run-down
     // handling; a kdmapper load gets a scratch block and can never be
     // unloaded anyway. Only wire the unload routine for the former.
-    if (NaDriverObjectWritable(drv, reg)) drv->DriverUnload = NaUnload;
+    NaWireUnload(drv, reg);
     OBJECT_ATTRIBUTES oa;
     InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
     HANDLE hThread;

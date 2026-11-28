@@ -4,6 +4,15 @@
 typedef short CSHORT;
 typedef unsigned short USHORT;
 
+/* SEH: MSVC has __try/__except natively. The host gate compiles the same
+ * source with gcc, so map it onto an if/else that always takes the __try
+ * path. The handler argument is swallowed by the macro parameter. */
+#ifndef _MSC_VER
+#define __try if (1)
+#define __except(x) else
+#define EXCEPTION_EXECUTE_HANDLER 1
+#endif
+
 #ifndef ARGUMENT_PRESENT
 #define ARGUMENT_PRESENT(x) ((x) != NULL)
 #endif
