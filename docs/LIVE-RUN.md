@@ -18,16 +18,21 @@ sc_drv.c(280): warning C4996 ExAllocatePoolWithTag   # осознанно, не 
 ## 1. Порядок
 
 PowerShell **от администратора**. Свежее админское окно стартует в
-`C:\Windows\system32`, поэтому пути должны быть абсолютными. Есть
-диспетчер, которому текущая папка безразлична:
+`C:\Windows\system32`, поэтому сначала перейди в проект, а диспетчер зови
+через ` .\ ` — в PowerShell кавычки в начале строки это строка, а не команда,
+и полный путь требует оператора `&`:
 
+```powershell
+cd "D:\NZL Rob run"
+.\NZL.bat build      # драйвер + приложения + host-тесты
+.\NZL.bat load       # загрузить драйвер (до запуска игры)
+.\NZL.bat probe      # транспорт + цепочка (игра в матче)
+.\NZL.bat overlay    # ESP, INSERT = меню, END = выход
+.\NZL.bat report     # отчёт с -Zip -CopyToDropbox
 ```
-"D:\NZL Rob run\NZL.bat" build
-"D:\NZL Rob run\NZL.bat" load
-"D:\NZL Rob run\NZL.bat" probe
-"D:\NZL Rob run\NZL.bat" overlay
-"D:\NZL Rob run\NZL.bat" report
-```
+
+Из другой папки, в PowerShell: `& "D:\NZL Rob run\NZL.bat" overlay`.
+В cmd.exe кавычек достаточно: `"D:\NZL Rob run\NZL.bat" overlay`.
 
 `report` без аргументов сам добавляет `-Zip -CopyToDropbox`.
 Эквивалент вручную, тоже из любой папки:
