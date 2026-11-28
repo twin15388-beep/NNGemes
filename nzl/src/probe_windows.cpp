@@ -4,6 +4,9 @@
 #ifndef _WIN32
 #error "Windows only"
 #endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <tlhelp32.h>
 #include <cstdio>

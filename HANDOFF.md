@@ -675,38 +675,38 @@
   per-stage exit codes; it does not delete an existing `driver.sys`. The driver
   batch script checks copy failure.
 
-### Checks run in sandbox (2026-11-27)
-- Re-run after the final profile, memory-header and Windows build-script edits:
-  direct g++ C++20 builds of `test_chain`, `test_pipeline`, and `test_profile` all
-  passed; Python `py_compile` and all 12 `unittest` tests passed. `git diff --check`
-  passed.
-- Zig 0.13.0 `x86_64-windows-gnu` compile and link passed for
-  `nzl_overlay.exe`, `nzl_studio.exe`, and `nzl_probe.exe` (all PE machine
-  `0x8664`, each compile/link exit code 0). Temporary binaries are in `/tmp` only;
-  this GNU cross-build does not establish native Windows or runtime success.
-- `cmake`, PowerShell, MSVC, and WDK are unavailable in this sandbox; therefore
-  `NZL-BuildAll.ps1`, native MSVC/WDK build, driver build and packaging workflow
-  have NOT run here. No game process or live ESP counters were tested.
+### Checks run in sandbox and owner build feedback (2026-11-27)
+- Direct g++ C++20 builds of `test_chain`, `test_pipeline`, and `test_profile` passed;
+  Python `py_compile` and all 12 `unittest` tests passed. These were rerun after the
+  Windows compile fixes below; `git diff --check` passed.
+- Zig 0.13.0 `x86_64-windows-gnu` compile and link passed for `nzl_overlay.exe`,
+  `nzl_studio.exe`, and `nzl_probe.exe` after those fixes (all PE machine `0x8664`).
+  This GNU cross-build is not an MSVC or runtime test.
+- Owner's native MSVC/WDK run against commit `7ec479e` built `driver.sys`, but
+  `overlay_windows.cpp` failed because Windows headers expand the identifier
+  `small`; `probe_windows.cpp` failed because the Windows `max` macro expands
+  `std::numeric_limits<uint32_t>::max()`. CMake built the profile-test target but
+  CTest was skipped because app compilation returned 1. Fixes on the current
+  branch rename the font variable to `small_font`, define `NOMINMAX` before
+  `windows.h` in the probe, and make the build script explicitly say not to run
+  after a failed build. Native MSVC rebuild is pending. Do not load the driver.
+- The sandbox itself has no CMake/PowerShell/MSVC/WDK, so no native workflow was
+  run here. No live match, overlay runtime, or ESP counters have been verified.
 
 ### Source archive / immediate next step
-- Current deliverable is `build/NZL-Studio-updated-source.zip`, an ignored source
-  archive built from current tracked working-tree files plus non-ignored untracked
-  source additions. It excludes
-  `.git`, the ignored `build/` directory, `HANDOFF.md` (sandbox-only handoff and
-  archive verification notes), and Windows executables/driver/build binaries.
-  In particular, the tracked `RobRun.exe` (1,900,544-byte MZ/PE) was checked and
-  deliberately excluded; it remains untouched in the repository. The ZIP was
-  verified to contain all three new profile source/test files and no PE/driver
-  binaries. `unzip -t` passed. Final archive: 88 files, 420,258 uncompressed
-  bytes, 157,302 ZIP bytes, SHA-256
-  `8548128034a5bde2847aef5579e4ffb817bd76ec71fb6e6b0937bb0ab7983ac1`. A second
-  packaging pass produced a byte-identical ZIP.
-- Download the ZIP from Arena and save it as
-  `D:\NZL Rob run\NZL-Studio-updated-source.zip`; extract it over that project
-  root. Then run from Windows PowerShell:
-  `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-BuildAll.ps1`.
-  Report the script's actual final exit code and per-stage output. This sandbox's
-  GNU cross-build is not a substitute for the requested native Windows build.
-- On a successful Windows build, start the app, enter a match, and send the full
-  status line containing `data/paint/dict/roster/pos/draw` (and any error text).
-  Until then the 2–3-player/lag cause and live game compatibility remain unknown.
+- `build/NZL-Studio-updated-source.zip` is an ignored source archive built from
+  tracked working-tree files plus non-ignored untracked source additions. It
+  excludes `.git`, `build/`, this sandbox-only `HANDOFF.md`, and Windows/driver
+  binaries. The tracked `RobRun.exe` (1,900,544-byte MZ/PE) is deliberately omitted
+  and remains untouched in the repository. The regenerated ZIP contains 88 files,
+  420,489 uncompressed bytes, and 157,365 ZIP bytes; SHA-256
+  `df9afee807b28d9cf1e609fa0c5002c6ab8bc760a440a71a577c94bcc759b39c`. `unzip -t`
+  passed. The archive excludes this handoff, so the checksum note is not self-referential.
+- Windows checkout is on `arena/6d12f677-nngemes` at `7ec479e`. After the current
+  fix is pushed, run `git pull --ff-only origin arena/6d12f677-nngemes`, confirm
+  the build-script `3/3 host unit tests` stage and profile target, then run
+  `tools/NZL-BuildAll.ps1` from the project root. Send the full output and exit
+  code; do not load the driver until the corrected build and tests pass.
+- After a successful native build and tests, the next goal is a controlled live
+  probe and then a current `data/paint/dict/roster/pos/draw` status line. The
+  2–3-player/lag cause and all runtime compatibility remain unknown.

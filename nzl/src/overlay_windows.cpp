@@ -896,11 +896,11 @@ static void draw_menu(HDC dc, const RECT& client, const Ctx& c) {
   SetBkMode(dc, TRANSPARENT);
   HFONT title = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
   HFONT normal = CreateFontA(14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
-  HFONT small = CreateFontA(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
+  HFONT small_font = CreateFontA(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
   HGDIOBJ oldfont = SelectObject(dc, title);
   draw_text(dc, 18, 20, "NZL", RGB(198, 145, 255));
   SelectObject(dc, normal); draw_text(dc, 66, 25, "STUDIO", RGB(238, 238, 244));
-  SelectObject(dc, small); draw_text(dc, 18, 57, "ROB RUN  |  OVERLAY", RGB(120, 122, 136));
+  SelectObject(dc, small_font); draw_text(dc, 18, 57, "ROB RUN  |  OVERLAY", RGB(120, 122, 136));
   for (int i = 0; i < kTabCount; ++i) {
     RECT tr{10, 96 + i * 54, kSidebarWidth - 10, 140 + i * 54};
     if (i == c.menu_tab) {
@@ -910,12 +910,12 @@ static void draw_menu(HDC dc, const RECT& client, const Ctx& c) {
     SelectObject(dc, normal);
     draw_text(dc, 25, tr.top + 14, kTabNames[i], i == c.menu_tab ? RGB(245, 235, 255) : RGB(155, 157, 170));
   }
-  SelectObject(dc, small);
+  SelectObject(dc, small_font);
   draw_text(dc, 18, client.bottom - 42, "INSERT  hide menu", RGB(122, 124, 138));
   draw_text(dc, 18, client.bottom - 24, "END  exit", RGB(122, 124, 138));
   SelectObject(dc, title);
   draw_text(dc, kContentX, 20, kTabNames[std::clamp(c.menu_tab, 0, kTabCount - 1)], RGB(240, 239, 245));
-  SelectObject(dc, small);
+  SelectObject(dc, small_font);
   COLORREF statusColor = c.esp_ready ? RGB(120, 230, 160) : RGB(232, 190, 105);
   draw_text(dc, kContentX, 58, c.status.c_str(), statusColor);
   RECT close{client.right - 42, 10, client.right - 10, 40};
@@ -924,7 +924,7 @@ static void draw_menu(HDC dc, const RECT& client, const Ctx& c) {
   size_t count = 0; const MenuOption* items = page_options(c.menu_tab, count);
   for (size_t i = 0; i < count; ++i) draw_menu_option(dc, c, items[i], i);
   SelectObject(dc, oldfont);
-  DeleteObject(title); DeleteObject(normal); DeleteObject(small);
+  DeleteObject(title); DeleteObject(normal); DeleteObject(small_font);
 }
 static RECT g_option_rect_drag{};
 static int g_drag_option = -1;

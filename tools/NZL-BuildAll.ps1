@@ -98,5 +98,9 @@ if ($cmakeCommand) {
     Write-Nzl "CTest skipped because CMake is unavailable."
 }
 
-Write-Nzl "Build workflow exit=$overallExit. Next run NZL-START.bat; it reuses a complete Key/Shm state and will not map the driver twice."
+if ($overallExit -eq 0) {
+    Write-Nzl "Build workflow exit=0. Build and host tests passed; this script did not load the driver."
+} else {
+    Write-Nzl "Build workflow exit=$overallExit. Build failed; do not launch NZL-START.bat or load the driver until errors are fixed."
+}
 exit $overallExit

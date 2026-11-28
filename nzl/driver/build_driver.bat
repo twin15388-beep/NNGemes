@@ -99,6 +99,6 @@ copy /Y "x64\Release\driver.sys" "driver.sys" >nul
 if errorlevel 1 ( echo [FAILED] copy & exit /b 1 )
 echo.
 echo BUILD_OK  -^>  x64\Release\driver.sys  (copied to driver.sys in this folder)
-echo.
-echo Load with kdmapper as admin, then run NZL Studio (it reads HKLM\SYSTEM\NaCoreFilter). 
+echo Driver build only; this script does not load it.
+echo Do not load until all NZL applications and host tests have passed.
 exit /b 0
