@@ -1,5 +1,5 @@
 #pragma once
-#include <Windows.h>
+#include <windows.h>
 
 #define NA_CMD_READ   1
 #define NA_CMD_WRITE  2

@@ -5,21 +5,48 @@ namespace nzl {
 static float dot(Vec3f a, Vec3f b){ return a.x*b.x+a.y*b.y+a.z*b.z; }
 static Vec3f sub(Vec3f a, Vec3f b){ return {a.x-b.x,a.y-b.y,a.z-b.z}; }
 static float len(Vec3f a){ return std::sqrt(dot(a,a)); }
-std::vector<PlayerSnap> snapshot_players(const IMemory& m, const ChainResult& chain, const Offsets& o, const Vec3f& local_pos){
-  std::vector<PlayerSnap> out;
-  if(!chain.ok) return out;
-  auto h = read_dict(m, chain.dict, o); if(!h) return out;
-  for(int i=0;i<h->count;i++){
-    auto v = dict_value_at(m, *h, i, o); if(!v) continue;
-    auto pos = read_char_pos(m, *v, o); if(!pos) continue;
-    PlayerSnap s; s.addr=*v;
-    if(auto id=m.i32(*v+o.char_id)) s.id=*id;
-    if(auto d=m.u8(*v+o.char_is_dead)) s.dead=(*d!=0);
-    s.pos=*pos; s.dist=len(sub(*pos,local_pos));
-    out.push_back(s);
+std::vector<PlayerSnap> snapshot_players(const IMemory& memory,
+                                         const ChainResult& chain,
+                                         const Offsets& offsets,
+                                         const Vec3f& local_pos,
+                                         uint64_t expected_character_class) {
+  std::vector<PlayerSnap> players;
+  if (!chain.ok || !offsets.profile_configured) return players;
+  const auto header = read_dict(memory, chain.dict, offsets);
+  if (!header) return players;
+
+  for (int index = 0; index < header->count; ++index) {
+    const auto character = dict_value_at(memory, *header, index, offsets);
+    if (!character) continue;
+    if (expected_character_class) {
+      const auto klass = memory.ptr(*character);
+      if (!klass || *klass != expected_character_class) continue;
+    }
+
+    const auto position = read_char_pos(memory, *character, offsets);
+    if (!position) continue;
+    PlayerSnap player;
+    player.addr = *character;
+
+    if (*character <= UINT64_MAX - offsets.char_id) {
+      const auto id = memory.i32(*character + offsets.char_id);
+      if (id) player.id = *id;
+    }
+    if (*character <= UINT64_MAX - offsets.char_is_dead) {
+      const auto dead = memory.u8(*character + offsets.char_is_dead);
+      if (dead) player.dead = *dead != 0;
+    }
+
+    player.pos = *position;
+    player.dist = len(sub(*position, local_pos));
+    if (!std::isfinite(player.dist)) continue;
+    players.push_back(player);
   }
-  std::sort(out.begin(), out.end(), [](const PlayerSnap& a, const PlayerSnap& b){ return a.dist<b.dist; });
-  return out;
+  std::sort(players.begin(), players.end(),
+            [](const PlayerSnap& left, const PlayerSnap& right) {
+              return left.dist < right.dist;
+            });
+  return players;
 }
 bool world_to_screen(const CameraView& c, const Vec3f& w, float& sx, float& sy, float& depth){
   if(c.width<=0||c.height<=0||c.fov_deg<=1||c.fov_deg>=179) return false;
@@ -40,7 +67,7 @@ std::vector<DrawCmd> build_draw_list(const CameraView& c, const std::vector<Play
     if(p.dead || p.dist>max_dist) continue;
     float fx,fy,fd,hx,hy,hd;
     if(!world_to_screen(c,p.pos,fx,fy,fd)) continue;
-    Vec3f head{p.pos.x, p.pos.y+1.8f, p.pos.z};
+    Vec3f head{p.pos.x, p.pos.y + c.head_height_m, p.pos.z};
     if(!world_to_screen(c,head,hx,hy,hd)) continue;
     float hgt = std::fabs(fy-hy); if(hgt<2) continue;
     float wid = hgt*0.45f;

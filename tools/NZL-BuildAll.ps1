@@ -1,37 +1,102 @@
-﻿<#
-NZL Studio - build everything (Windows, run from NZL project root).
-1) Driver: nzl\driver\build_driver.bat (MSVC+WDK) -> driver.sys
-2) NZL executables: cmake (if present) or MSVC directly -> build-nzl\nzl_probe.exe
+<#
+NZL Studio - build everything (Windows, run from the project root).
+Builds the MSVC+WDK driver, all three x64 NZL applications, then runs the
+host-side C++ tests. A non-zero process exit means at least one requested
+stage failed; per-stage exit codes are printed above.
 Usage:
-  powershell -ExecutionPolicy Bypass -File tools\NZL-BuildAll.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-BuildAll.ps1
 #>
 $ErrorActionPreference = "Continue"
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
-function Write-Nzl([string]$m) { Write-Host "[NZL] $m" -ForegroundColor Magenta }
+function Write-Nzl([string]$message) {
+    Write-Host "[NZL] $message" -ForegroundColor Magenta
+}
+
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
+$overallExit = 0
 
-Write-Nzl "1/2 driver (MSVC+WDK)..."
+Write-Nzl "1/3 driver (MSVC+WDK)..."
+$driverLog = Join-Path $root "driver_build.log"
+$driverPath = Join-Path $root "nzl\driver\driver.sys"
 Push-Location (Join-Path $root "nzl\driver")
-$drvLog = Join-Path $root "driver_build.log"
-$drvStale = Join-Path $root "nzl\driver\driver.sys"
-if (Test-Path $drvStale) { Remove-Item $drvStale -Force }
-& cmd /c "build_driver.bat > `"$drvLog`" 2>&1"
-$drvExit = $LASTEXITCODE
-Get-Content $drvLog | ForEach-Object { Write-Host "  $_" }
-$drv = Join-Path $root "nzl\driver\driver.sys"
-Pop-Location
-if ($drvExit -eq 0 -and (Test-Path $drv)) { Write-Nzl "driver.sys OK: $drv" } else { Write-Nzl "driver.sys NOT built (exit=$drvExit) - send me the file driver_build.log from the project root." }
-
-Write-Nzl "2/2 NZL executables..."
-$cmake = Get-Command cmake -ErrorAction SilentlyContinue
-if ($cmake) {
-    & cmake -S nzl -B build-nzl -A x64
-    & cmake --build build-nzl --config Release
-    if (Test-Path "build-nzl\Release\nzl_probe.exe") { Write-Nzl "nzl_probe.exe OK: build-nzl\Release\nzl_probe.exe" }
-    elseif (Test-Path "build-nzl\nzl_probe.exe") { Write-Nzl "nzl_probe.exe OK: build-nzl\nzl_probe.exe" }
-    else { Write-Nzl "nzl_probe.exe NOT built - send me the build errors." }
-} else {
-    Write-Nzl "cmake not found. Install CMake (winget install Kitware.CMake) + Visual Studio 2022 C++, then rerun."
+try {
+    & cmd /c "build_driver.bat > `"$driverLog`" 2>&1"
+    $driverExit = $LASTEXITCODE
+} finally {
+    Pop-Location
 }
-Write-Nzl "Done. Next: load driver (kdmapper, admin) BEFORE game, launch game via Steam, get into match, run nzl_probe.exe, send nzl_probe.txt."
+if (Test-Path $driverLog) {
+    Get-Content $driverLog | ForEach-Object { Write-Host "  $_" }
+}
+$driverLogOk = (Test-Path $driverLog) -and (Select-String -Path $driverLog -SimpleMatch "BUILD_OK" -Quiet -ErrorAction SilentlyContinue)
+if ($driverExit -eq 0 -and $driverLogOk -and (Test-Path $driverPath)) {
+    Write-Nzl "driver.sys OK: $driverPath (exit=$driverExit)"
+} else {
+    Write-Nzl "driver.sys NOT built (exit=$driverExit); existing driver.sys, if any, was left untouched."
+    $overallExit = 1
+}
+
+Write-Nzl "2/3 NZL x64 applications..."
+$cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
+if (-not $cmakeCommand) {
+    Write-Nzl "cmake not found. Install CMake and Visual Studio 2022 C++, then rerun."
+    $overallExit = 1
+} else {
+    $configureArgs = @("-S", "nzl", "-B", "build-nzl", "-A", "x64")
+    & $cmakeCommand.Source @configureArgs
+    $configureExit = $LASTEXITCODE
+    Write-Nzl "CMake configure exit=$configureExit"
+    if ($configureExit -ne 0) {
+        $overallExit = 1
+    } else {
+        & $cmakeCommand.Source --build build-nzl --config Release
+        $buildExit = $LASTEXITCODE
+        Write-Nzl "CMake build exit=$buildExit"
+        if ($buildExit -ne 0) {
+            $overallExit = 1
+        } else {
+            $expected = @{
+                "nzl_probe.exe" = @("build-nzl\Release\nzl_probe.exe", "build-nzl\nzl_probe.exe")
+                "nzl_studio.exe" = @("build-nzl\Release\nzl_studio.exe", "build-nzl\nzl_studio.exe")
+                "nzl_overlay.exe" = @("build-nzl\Release\nzl_overlay.exe", "build-nzl\nzl_overlay.exe")
+            }
+            foreach ($name in $expected.Keys) {
+                $found = $false
+                foreach ($candidate in $expected[$name]) {
+                    if (Test-Path $candidate) {
+                        Write-Nzl "$name OK: $candidate"
+                        $found = $true
+                        break
+                    }
+                }
+                if (-not $found) {
+                    Write-Nzl "$name NOT FOUND after a successful CMake build."
+                    $overallExit = 1
+                }
+            }
+        }
+    }
+}
+
+Write-Nzl "3/3 host unit tests..."
+if ($cmakeCommand) {
+    $ctestCommand = Get-Command ctest -ErrorAction SilentlyContinue
+    if (-not $ctestCommand) {
+        Write-Nzl "ctest not found; test stage could not run."
+        $overallExit = 1
+    } elseif ($configureExit -eq 0 -and $buildExit -eq 0) {
+        & $ctestCommand.Source --test-dir build-nzl -C Release --output-on-failure
+        $testExit = $LASTEXITCODE
+        Write-Nzl "CTest exit=$testExit"
+        if ($testExit -ne 0) { $overallExit = 1 }
+    } else {
+        Write-Nzl "CTest skipped because configure/build failed."
+        $overallExit = 1
+    }
+} else {
+    Write-Nzl "CTest skipped because CMake is unavailable."
+}
+
+Write-Nzl "Build workflow exit=$overallExit. Next run NZL-START.bat; it reuses a complete Key/Shm state and will not map the driver twice."
+exit $overallExit

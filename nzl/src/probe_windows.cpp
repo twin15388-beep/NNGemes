@@ -1,7 +1,6 @@
-// NZL Studio probe (Windows) — validates the Sharedmem Driver transport
-// WITHOUT any game offsets. Safe first step after loading the driver:
-// finds the game, reads PE headers through the driver, queries regions.
-// Writes nzl_probe.txt in the current folder. Send me that file.
+// NZL Studio probe (Windows) — checks Sharedmem transport first, then uses
+// only the owner build profile after its GameAssembly fingerprint, loaded PE
+// bounds, and TypeInfo class names match. Writes nzl_probe.txt in cwd.
 #ifndef _WIN32
 #error "Windows only"
 #endif
@@ -12,6 +11,12 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <iterator>
+#include <limits>
+#include <string_view>
+#include "nzl/chain.h"
+#include "nzl/esp_pipeline.h"
+#include "nzl/windows_profile.h"
 #include "../client/sc_client.h"
 
 static FILE* g_log = nullptr;
@@ -25,14 +30,14 @@ static void logf(const char* fmt, ...) {
 static DWORD find_pid(const wchar_t* name) {
   HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (s == INVALID_HANDLE_VALUE) return 0;
-  PROCESSENTRY32W e{sizeof(e)}; DWORD pid = 0;
+  PROCESSENTRY32W e{}; e.dwSize = sizeof(e); DWORD pid = 0;
   if (Process32FirstW(s, &e)) do { if (_wcsicmp(e.szExeFile, name) == 0) { pid = e.th32ProcessID; break; } } while (Process32NextW(s, &e));
   CloseHandle(s); return pid;
 }
 static uint64_t module_base(DWORD pid, const wchar_t* name, bool* snapshot_ok) {
   HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
   if (s == INVALID_HANDLE_VALUE) { if (snapshot_ok) *snapshot_ok = false; return 0; }
-  MODULEENTRY32W e{sizeof(e)}; uint64_t base = 0;
+  MODULEENTRY32W e{}; e.dwSize = sizeof(e); uint64_t base = 0;
   if (Module32FirstW(s, &e)) do { if (_wcsicmp(e.szModule, name) == 0) { base = (uint64_t)e.modBaseAddr; break; } } while (Module32NextW(s, &e));
   CloseHandle(s); if (snapshot_ok) *snapshot_ok = true; return base;
 }
@@ -46,6 +51,18 @@ static bool read_mz_pe(uint32_t pid, uint64_t base, const char* label) {
   logf("[probe] %s: MZ=0x%04x e_lfanew=0x%x PE=0x%x -> %s\n", label, mz, lfanew, sig, ok ? "OK" : "MISMATCH");
   return ok;
 }
+class ProbeMemory final : public nzl::IMemory {
+ public:
+  explicit ProbeMemory(DWORD pid) : pid_(pid) {}
+  bool read(uint64_t address, void* output, size_t size) const override {
+    if (!output || size == 0 || size > std::numeric_limits<uint32_t>::max())
+      return false;
+    return NaRead(static_cast<uint32_t>(pid_), address,
+                  static_cast<uint32_t>(size), output);
+  }
+ private:
+  DWORD pid_ = 0;
+};
 int main(int argc, char** argv) {
   g_log = std::fopen("nzl_probe.txt", "w");
   logf("[NZL Studio probe] transport check, no offsets used\n");
@@ -86,6 +103,7 @@ int main(int argc, char** argv) {
     if (g_log) std::fclose(g_log); return 4;
   }
   logf("[probe] NaInit OK (sharedmem transport alive)\n");
+  ProbeMemory mem(pid);
   uint64_t base = NaGetBase(pid);
   uint64_t peb = NaGetPeb(pid);
   logf("[probe] exe base=0x%llx peb=0x%llx\n", (unsigned long long)base, (unsigned long long)peb);
@@ -181,132 +199,210 @@ int main(int argc, char** argv) {
     else
       logf("[probe] NaQueryRegion(GameAssembly) FAILED\n");
   }
-  logf("[probe] RESULT: %s\n", transport ? "TRANSPORT_OK - driver reads the game; next step is offsets from Il2CppDumper (nzl_dump.zip)" : "TRANSPORT_FAIL - see lines above, send me nzl_probe.txt");
-  // ---- ROOT FINDER (build 26866884, offsets cross-checked vs SDK dump) --
-  // UnityEntry has no TypeInfo slot and no static instance field, so the
-  // root is found as a live Game object: TypeInfo slots DO exist for every
-  // class in the chain (RVAs below, from build-matched script.json). Read
-  // each Il2CppClass*, verify its name (Il2CppClass.name @ +0x10), then
-  // heap-scan MEM_PRIVATE committed regions for an object whose header
-  // qword == Game class, and validate the WHOLE chain by class pointers:
-  // Game -(+0xD8|0xD0)-> GameModel -(+0x10)-> BattleModel -(+0x90)->
-  // BattleEntitiesModel -(+0x60)-> WorldEntitiesModel -(+0x18)-> dict,
-  // BattleModel -(+0x358)-> BattleCameraModel. A candidate that fails any
-  // class check is rejected; nothing here is assumed.
-  if (ga) {
-    struct Slot { const char* label; uint64_t rva; const char* want_name; };
-    const Slot slots[] = {
-      { "Game",              0x81B7710ULL, "Game" },
-      { "GameModel",         0x81B86D8ULL, "GameModel" },
-      { "BattleModel",       0x82496E8ULL, "BattleModel" },
-      { "BattleEntitiesModel",0x8245928ULL, "BattleEntitiesModel" },
-      { "WorldEntitiesModel",0x82295C8ULL, "WorldEntitiesModel" },
-      { "BattleCameraModel", 0x823C210ULL, "BattleCameraModel" },
-      { "BattleCharacterModel",0x823FFD0ULL, "BattleCharacterModel" },
+  logf("[probe] transport result: %s\n",
+       transport ? "TRANSPORT_OK - driver reads this process" :
+                   "TRANSPORT_FAIL - see lines above, send me nzl_probe.txt");
+
+  constexpr const auto& profile = nzl::game_profile::kOwnerProfile26866884;
+  const nzl::Offsets offsets(profile);
+  int result_code = transport ? 0 : 5;
+  bool profile_identity_ok = false;
+  bool classes_ok = false;
+  bool root_found = false;
+  nzl::ChainResult live_chain;
+  uint64_t klass[7]{};
+
+  if (!transport) {
+    logf("[profile] STOP: transport checks failed; no build offsets used.\n");
+  } else if (!ga) {
+    logf("[profile] STOP: GameAssembly base was not found; no build offsets used.\n");
+    result_code = 6;
+  } else if (!offsets.profile_configured) {
+    logf("[profile] STOP: selected profile is incomplete; no build offsets used.\n");
+    result_code = 6;
+  } else {
+    // No game-specific offset is used unless the on-disk owner SHA/size and
+    // loaded PE image bounds both match this single build profile.
+    const auto file_check = nzl::windows_profile::verify_gameassembly_file(pid, profile);
+    logf("[profile] id=%.*s build=%.*s status=%s size=%llu/%llu expected_sha256=%.*s actual_sha256=%s win32=%lu bcrypt=0x%08lX\n",
+         static_cast<int>(profile.fingerprint.profile_id.size()), profile.fingerprint.profile_id.data(),
+         static_cast<int>(profile.fingerprint.steam_build_id.size()), profile.fingerprint.steam_build_id.data(),
+         nzl::windows_profile::status_name(file_check.status),
+         static_cast<unsigned long long>(file_check.actual_size),
+         static_cast<unsigned long long>(profile.fingerprint.gameassembly_file_size),
+         static_cast<int>(profile.fingerprint.gameassembly_sha256.size()), profile.fingerprint.gameassembly_sha256.data(),
+         file_check.actual_sha256.c_str(), static_cast<unsigned long>(file_check.win32_error),
+         static_cast<unsigned long>(file_check.bcrypt_status));
+
+    const auto remote_read = [&](uint64_t address, void* output, size_t size) {
+      if (size > std::numeric_limits<uint32_t>::max()) return false;
+      return NaRead(static_cast<uint32_t>(pid), address,
+                    static_cast<uint32_t>(size), output) != false;
     };
-    uint64_t klass[7] = {};
-    auto read_ptr = [&](uint64_t a, uint64_t* out) -> bool {
-      return NaRead((uint32_t)pid, a, 8, out) != false;
-    };
-    auto klass_name = [&](uint64_t k, char* out, size_t cap) -> bool {
-      uint64_t np = 0;
-      if (!k || !read_ptr(k + 0x10, &np) || !np) return false;
-      std::memset(out, 0, cap);
-      if (!NaRead((uint32_t)pid, np, (uint32_t)cap - 1, out)) return false;
-      out[cap - 1] = 0;
-      return out[0] != 0;
-    };
-    bool klass_ok = true;
-    for (int i = 0; i < 7; i++) {
-      if (!read_ptr(ga + slots[i].rva, &klass[i])) klass[i] = 0;
-      char nm[64] = {};
-      bool got = klass[i] && klass_name(klass[i], nm, sizeof(nm));
-      logf("[root] TypeInfo %s slot RVA=0x%llx klass=0x%llx name='%s' %s\n",
-           slots[i].label, (unsigned long long)slots[i].rva,
-           (unsigned long long)(klass[i] ? klass[i] : 0), got ? nm : "?",
-           (got && std::strcmp(nm, slots[i].want_name) == 0) ? "NAME_OK" : "NAME_MISMATCH");
-      if (!got || std::strcmp(nm, slots[i].want_name) != 0) klass_ok = false;
-    }
-    if (!klass_ok || !klass[0]) {
-      logf("[root] STOP: class name validation failed (wrong build or classes not initialized - be in menu/match). Send nzl_probe.txt.\n");
+    uint32_t image_size = 0;
+    if (!file_check.matched()) {
+      logf("[profile] STOP: GameAssembly fingerprint mismatch; no profile offsets used.\n");
+      result_code = 7;
+    } else if (!nzl::windows_profile::read_loaded_pe_size_of_image(ga, remote_read, image_size) ||
+               !nzl::game_profile::type_info_rvas_fit_image(profile, image_size)) {
+      logf("[profile] STOP: invalid loaded PE/TypeInfo bounds, SizeOfImage=0x%x.\n",
+           image_size);
+      result_code = 7;
     } else {
-      auto obj_klass = [&](uint64_t obj) -> uint64_t {
-        uint64_t k = 0; return (obj && read_ptr(obj, &k)) ? k : 0;
-      };
-      auto validate_game = [&](uint64_t cand, uint64_t* chain_out) -> bool {
-        uint64_t gm = 0, bm = 0, be = 0, we = 0, dict = 0, cam = 0;
-        if (!read_ptr(cand + 0xD8, &gm) || obj_klass(gm) != klass[1]) {
-          if (!read_ptr(cand + 0xD0, &gm) || obj_klass(gm) != klass[1]) return false;
-        }
-        if (!read_ptr(gm + 0x10, &bm) || obj_klass(bm) != klass[2]) return false;
-        if (!read_ptr(bm + 0x90, &be) || obj_klass(be) != klass[3]) return false;
-        if (!read_ptr(be + 0x60, &we) || obj_klass(we) != klass[4]) return false;
-        if (!read_ptr(we + 0x18, &dict) || !dict) return false;
-        if (!read_ptr(bm + 0x358, &cam) || obj_klass(cam) != klass[5]) return false;
-        chain_out[0] = gm; chain_out[1] = bm; chain_out[2] = be;
-        chain_out[3] = we; chain_out[4] = dict; chain_out[5] = cam;
-        return true;
-      };
-      logf("[root] heap scan for Game instance (klass=0x%llx) ...\n", (unsigned long long)klass[0]);
-      uint64_t addr = 0x10000, scanned = 0, found_game = 0;
-      uint64_t chain[6] = {};
-      ULONGLONG scan_t0 = GetTickCount64();
-      std::vector<unsigned char> buf(0x10000);
-      for (int i = 0; i < 16384 && addr < 0x0000800000000000ULL && !found_game; i++) {
-        NaRegion r{};
-        if (!NaQueryRegion((uint32_t)pid, addr, &r)) break;
-        uint64_t next = r.base + (r.size ? r.size : 0x1000);
-        if (next <= addr) break;
-        addr = next;
-        bool readable = (r.protect == 0x02 || r.protect == 0x04 || r.protect == 0x20 ||
-                         r.protect == 0x40 || r.protect == 0x80);
-        if (r.state != 0x1000 /*COMMIT*/ || r.type != 0x20000 /*MEM_PRIVATE*/ || !readable)
-          continue;
-        for (uint64_t off = 0; off < r.size && !found_game; off += 0x10000) {
-          uint64_t chunk = r.base + off;
-          uint32_t want = (uint32_t)((r.size - off) < 0x10000 ? (r.size - off) : 0x10000);
-          // Never even ask the driver for non-user ranges (BSOD #4 class):
-          // the driver now rejects them too, this keeps the log honest.
-          if (chunk >= 0x0000800000000000ULL || want > 0x0000800000000000ULL - chunk) continue;
-          if (!NaRead((uint32_t)pid, chunk, want, buf.data())) continue;
-          scanned += want;
-          if ((scanned & 0x7FFFFFFULL) < want)
-            logf("[root] scanned %llu MiB +%llums\n", (unsigned long long)(scanned >> 20),
-                 (unsigned long long)(GetTickCount64() - scan_t0));
-          for (uint32_t o = 0; o + 8 <= want; o += 8) {
-            uint64_t v = 0; std::memcpy(&v, buf.data() + o, 8);
-            if (v != klass[0]) continue;
-            uint64_t cand = chunk + o, ch[6] = {};
-            logf("[root] Game-klass candidate @0x%llx (scanned %llu MiB) - validating chain...\n",
-                 (unsigned long long)cand, (unsigned long long)(scanned >> 20));
-            if (validate_game(cand, ch)) {
-              found_game = cand;
-              for (int k = 0; k < 6; k++) chain[k] = ch[k];
-              break;
-            }
-          }
-        }
-      }
-      if (found_game) {
-        float cp[3] = {}; NaRead((uint32_t)pid, chain[5] + 0x10, 12, cp);
-        int32_t dcount = 0; uint64_t dentries = 0;
-        read_ptr(chain[4] + 0x18, &dentries);
-        NaRead((uint32_t)pid, chain[4] + 0x20, 4, &dcount);
-        logf("[root] ROOT GAME FOUND @0x%llx GameModel=0x%llx BattleModel=0x%llx BattleEntities=0x%llx WorldEntities=0x%llx Dict=0x%llx (entries=0x%llx count=%d) CameraModel=0x%llx camPos=(%.2f,%.2f,%.2f) scan=%lluMiB %llums\n",
-             (unsigned long long)found_game, (unsigned long long)chain[0],
-             (unsigned long long)chain[1], (unsigned long long)chain[2],
-             (unsigned long long)chain[3], (unsigned long long)chain[4],
-             (unsigned long long)dentries, dcount, (unsigned long long)chain[5],
-             cp[0], cp[1], cp[2], (unsigned long long)(scanned >> 20),
-             (unsigned long long)(GetTickCount64() - scan_t0));
-        logf("[root] RESULT: ROOT_OK - validated Game chain live. Send nzl_probe.txt.\n");
-      } else {
-        logf("[root] RESULT: ROOT_NOT_FOUND scanned=%lluMiB %llums (Game object not in committed private heap, or not created yet - be in menu/match). Send nzl_probe.txt.\n",
-             (unsigned long long)(scanned >> 20), (unsigned long long)(GetTickCount64() - scan_t0));
-      }
+      profile_identity_ok = true;
+      logf("[profile] loaded SizeOfImage=0x%x; profile TypeInfo RVAs fit; Game.GameModel=+0x%x (no fallback).\n",
+           image_size, offsets.game_model);
     }
   }
+
+  if (profile_identity_ok) {
+    auto class_name_matches = [&](uint64_t class_pointer,
+                                  std::string_view expected) -> bool {
+      if (!nzl::plausible_ptr(class_pointer) ||
+          class_pointer > UINT64_MAX - offsets.il2cpp_class_name) return false;
+      const auto name_pointer = mem.ptr(class_pointer + offsets.il2cpp_class_name);
+      if (!name_pointer || !nzl::plausible_ptr(*name_pointer)) return false;
+      char actual[96]{};
+      if (!mem.read(*name_pointer, actual, sizeof(actual) - 1)) return false;
+      actual[sizeof(actual) - 1] = '\0';
+      return std::string_view(actual) == expected;
+    };
+
+    classes_ok = true;
+    for (size_t i = 0; i < profile.type_info.size(); ++i) {
+      const auto& slot = profile.type_info[i];
+      if (!slot.rva.present() || slot.rva.value > UINT64_MAX - ga) {
+        classes_ok = false;
+        logf("[profile] TypeInfo %.*s: missing/out-of-range RVA.\n",
+             static_cast<int>(slot.class_name.size()), slot.class_name.data());
+        break;
+      }
+      const auto class_pointer = mem.ptr(ga + slot.rva.value);
+      klass[i] = class_pointer ? *class_pointer : 0;
+      const bool name_ok = class_name_matches(klass[i], slot.class_name);
+      logf("[profile] TypeInfo %-24.*s rva=0x%llX klass=0x%llX %s\n",
+           static_cast<int>(slot.class_name.size()), slot.class_name.data(),
+           static_cast<unsigned long long>(slot.rva.value),
+           static_cast<unsigned long long>(klass[i]),
+           name_ok ? "NAME_OK" : "NAME_MISMATCH");
+      if (!name_ok) {
+        classes_ok = false;
+        break;
+      }
+    }
+    if (!classes_ok) result_code = 8;
+  }
+
+  if (profile_identity_ok && classes_ok) {
+    auto chain_classes_match = [&](const nzl::ChainResult& candidate) -> bool {
+      if (!candidate.ok) return false;
+      const uint64_t objects[] = {candidate.game, candidate.game_model,
+                                  candidate.battle_model, candidate.battle_entities,
+                                  candidate.world_entities, candidate.camera_model};
+      for (size_t i = 0; i < std::size(objects); ++i) {
+        const auto object_class = mem.ptr(objects[i]);
+        if (!object_class || *object_class != klass[i]) return false;
+      }
+      return true;
+    };
+
+    uint64_t scan_start = 0x10000;
+    uint64_t candidates[256]{};
+    uint32_t scan_calls = 0;
+    while (scan_start && !root_found) {
+      uint64_t next = 0;
+      const uint32_t found = NaScan(static_cast<uint32_t>(pid), klass[0],
+                                    scan_start, candidates, 256, &next);
+      ++scan_calls;
+      for (uint32_t i = 0; i < found; ++i) {
+        const auto candidate = nzl::resolve_chain_from_game(mem, candidates[i], offsets);
+        if (!chain_classes_match(candidate)) continue;
+        const auto roster = nzl::read_dict(mem, candidate.dict, offsets);
+        if (!roster || roster->count <= 0) continue;
+        live_chain = candidate;
+        root_found = true;
+        break;
+      }
+      if ((scan_calls % 64) == 0 || root_found)
+        logf("[root] scan calls=%lu start=0x%llX next=0x%llX candidates=%lu root=%s\n",
+             static_cast<unsigned long>(scan_calls),
+             static_cast<unsigned long long>(scan_start),
+             static_cast<unsigned long long>(next),
+             static_cast<unsigned long>(found), root_found ? "FOUND" : "not-yet");
+      if (root_found || !next) break;
+      if (next <= scan_start) {
+        logf("[root] STOP: scan cursor did not advance (0x%llX -> 0x%llX).\n",
+             static_cast<unsigned long long>(scan_start),
+             static_cast<unsigned long long>(next));
+        break;
+      }
+      scan_start = next;
+    }
+
+    if (!root_found) {
+      logf("[root] RESULT: ROOT_NOT_FOUND after %lu scan calls; profile offsets were class-gated.\n",
+           static_cast<unsigned long>(scan_calls));
+      result_code = 9;
+    } else {
+      const auto roster = nzl::read_dict(mem, live_chain.dict, offsets);
+      logf("[root] ROOT_OK Game=0x%llX GameModel=0x%llX BattleModel=0x%llX BattleEntities=0x%llX WorldEntities=0x%llX Dict=0x%llX Camera=0x%llX\n",
+           static_cast<unsigned long long>(live_chain.game),
+           static_cast<unsigned long long>(live_chain.game_model),
+           static_cast<unsigned long long>(live_chain.battle_model),
+           static_cast<unsigned long long>(live_chain.battle_entities),
+           static_cast<unsigned long long>(live_chain.world_entities),
+           static_cast<unsigned long long>(live_chain.dict),
+           static_cast<unsigned long long>(live_chain.camera_model));
+      if (roster)
+        logf("[profile] roster dictionary Count=%d array_capacity=%u\n",
+             roster->count, roster->array_length);
+
+      const auto camera_vector = [&](uint32_t field_offset,
+                                     nzl::Vec3f& value) -> bool {
+        if (live_chain.camera_model > UINT64_MAX - field_offset) return false;
+        const auto read = nzl::read_vec3(mem, live_chain.camera_model + field_offset);
+        if (!read) return false;
+        value = *read;
+        return true;
+      };
+      nzl::Vec3f camera_position{}, camera_forward{}, camera_right{}, camera_up{};
+      const bool camera_ok = camera_vector(offsets.cam_pos, camera_position) &&
+                             camera_vector(offsets.cam_fwd, camera_forward) &&
+                             camera_vector(offsets.cam_right, camera_right) &&
+                             camera_vector(offsets.cam_up, camera_up);
+      logf("[camera] vectors=%s pos=(%.2f,%.2f,%.2f) fwd=(%.2f,%.2f,%.2f)\n",
+           camera_ok ? "OK" : "PARTIAL", camera_position.x, camera_position.y,
+           camera_position.z, camera_forward.x, camera_forward.y, camera_forward.z);
+
+      const auto players = nzl::snapshot_players(mem, live_chain, offsets,
+                                                  camera_position, klass[6]);
+      nzl::CameraView view;
+      view.pos = camera_position;
+      view.fwd = camera_forward;
+      view.right = camera_right;
+      view.up = camera_up;
+      view.head_height_m = offsets.head_height_m;
+      view.fov_deg = offsets.assumed_vertical_fov_deg;
+      view.width = GetSystemMetrics(SM_CXSCREEN);
+      view.height = GetSystemMetrics(SM_CYSCREEN);
+      const auto draws = nzl::build_draw_list(view, players, 500.0f);
+      size_t drawn_players = 0;
+      for (const auto& command : draws)
+        if (command.kind == nzl::DrawCmd::Text) ++drawn_players;
+      logf("[snapshot] roster_count=%d roster_capacity=%u valid_pos=%zu drawn=%zu draw_commands=%zu fov_assumed=%.1f\n",
+           roster ? roster->count : 0, roster ? roster->array_length : 0,
+           players.size(), drawn_players, draws.size(), view.fov_deg);
+      for (const auto& player : players)
+        logf("  #%d %s pos=(%.2f,%.2f,%.2f) dist=%.1fm @0x%llX\n",
+             player.id, player.dead ? "DEAD" : "alive", player.pos.x,
+             player.pos.y, player.pos.z, player.dist,
+             static_cast<unsigned long long>(player.addr));
+      logf("[probe] RESULT: ROOT_OK - exact owner fingerprint, TypeInfo names, full class chain, and Dictionary bounds validated.\n");
+      if (!transport) result_code = 5;
+    }
+  }
+
   NaClose();
   if (g_log) std::fclose(g_log);
-  return transport ? 0 : 5;
+  return result_code;
 }

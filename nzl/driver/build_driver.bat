@@ -96,6 +96,7 @@ echo [2/2] linking driver.sys
 if errorlevel 1 ( echo [FAILED] link & exit /b 1 )
 
 copy /Y "x64\Release\driver.sys" "driver.sys" >nul
+if errorlevel 1 ( echo [FAILED] copy & exit /b 1 )
 echo.
 echo BUILD_OK  -^>  x64\Release\driver.sys  (copied to driver.sys in this folder)
 echo.

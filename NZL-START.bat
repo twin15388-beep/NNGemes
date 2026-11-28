@@ -17,7 +17,7 @@ if not exist "nzl\driver\kdmapper.exe" (
     powershell -ExecutionPolicy Bypass -File "tools\NZL-GetKdmapper.ps1"
 )
 
-echo [NZL] 2/3 Loading driver (game must NOT be running yet)...
+echo [NZL] 2/3 Checking driver (already loaded = reuse, no second kdmapper)...
 powershell -ExecutionPolicy Bypass -File "tools\NZL-LoadDriver.ps1"
 if %errorlevel% neq 0 (
     echo [NZL] Driver load FAILED. Send a screenshot of this window.
@@ -26,8 +26,8 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [NZL] Driver loaded. NOW launch ROB RUN via Steam, enter a match,
-echo [NZL] then press any key here to start the overlay.
+echo [NZL] Driver ready. Launch ROB RUN if it is not already running,
+echo [NZL] enter a match, then press any key here to start the overlay.
 pause >nul
 
 echo [NZL] 3/3 Starting overlay (INSERT = menu, END = exit)...

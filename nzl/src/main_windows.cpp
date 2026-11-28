@@ -18,12 +18,13 @@
 #include "nzl/chain.h"
 #include "nzl/driver_memory.h"
 #include "nzl/esp_pipeline.h"
+#include "nzl/windows_profile.h"
 #include "../client/sc_client.h"
 
 static DWORD find_pid(const wchar_t* name) {
   HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (s == INVALID_HANDLE_VALUE) return 0;
-  PROCESSENTRY32W e{sizeof(e)}; DWORD pid = 0;
+  PROCESSENTRY32W e{}; e.dwSize = sizeof(e); DWORD pid = 0;
   if (Process32FirstW(s, &e)) do { if (_wcsicmp(e.szExeFile, name) == 0) { pid = e.th32ProcessID; break; } } while (Process32NextW(s, &e));
   CloseHandle(s); return pid;
 }
@@ -57,13 +58,15 @@ static uint64_t find_gameassembly(DWORD pid) {
   }
   return 0;
 }
-static bool klass_name_is(const nzl::IMemory& m, uint64_t klass, const char* want) {
-  auto np = m.ptr(klass + 0x10);
-  if (!np || !*np) return false;
-  char nm[64] = {};
-  if (!m.read(*np, nm, sizeof(nm) - 1)) return false;
-  nm[sizeof(nm) - 1] = 0;
-  return std::strcmp(nm, want) == 0;
+static bool klass_name_is(const nzl::IMemory& m, uint64_t klass,
+                          uint32_t name_offset, const char* want) {
+  if (klass > UINT64_MAX - name_offset) return false;
+  auto name_ptr = m.ptr(klass + name_offset);
+  if (!name_ptr || !*name_ptr) return false;
+  char name[64] = {};
+  if (!m.read(*name_ptr, name, sizeof(name) - 1)) return false;
+  name[sizeof(name) - 1] = 0;
+  return std::strcmp(name, want) == 0;
 }
 int main() {
   std::printf("[NZL Studio] purple build, Sharedmem Driver reader.\n");
@@ -78,25 +81,73 @@ int main() {
   uint64_t ga = find_gameassembly(pid);
   if (!ga) { std::printf("[NZL] GameAssembly NOT FOUND via region scan. Send this output.\n"); mem.close(); return 5; }
   std::printf("[NZL] GameAssembly=0x%llx\n", (unsigned long long)ga);
-  // TypeInfo slots (build 26866884, script.json) -> Il2CppClass* + name check.
-  struct Slot { const char* want; uint64_t rva; };
-  const Slot slots[] = {
-    {"Game", 0x81B7710ULL}, {"GameModel", 0x81B86D8ULL}, {"BattleModel", 0x82496E8ULL},
-    {"BattleEntitiesModel", 0x8245928ULL}, {"WorldEntitiesModel", 0x82295C8ULL},
-    {"BattleCameraModel", 0x823C210ULL},
-  };
-  uint64_t klass[6] = {};
-  for (int i = 0; i < 6; i++) {
-    auto k = mem.ptr(ga + slots[i].rva);
-    klass[i] = k ? *k : 0;
-    bool ok = klass[i] && klass_name_is(mem, klass[i], slots[i].want);
-    std::printf("[NZL] klass %-20s 0x%llx %s\n", slots[i].want, (unsigned long long)klass[i], ok ? "NAME_OK" : "NAME_MISMATCH");
-    if (!ok) { std::printf("[NZL] STOP: class validation failed (wrong build or not in menu/match yet).\n"); mem.close(); return 6; }
+  constexpr const auto& profile = nzl::game_profile::kOwnerProfile26866884;
+  nzl::Offsets off(profile);
+  if (!off.profile_configured) {
+    std::printf("[NZL][profile] STOP: profile data is incomplete; no offsets used.\n");
+    mem.close();
+    return 6;
   }
-  // Heap scan for the live Game object (same validation as probe-9, which
-  // found ROOT @1344MiB with dict count=25 in a live match).
-  nzl::Offsets off;
-  auto obj_klass = [&](uint64_t o) -> uint64_t { auto k = o ? mem.ptr(o) : std::nullopt; return k ? *k : 0; };
+  const auto file_check = nzl::windows_profile::verify_gameassembly_file(pid, profile);
+  std::printf("[NZL][profile] id=%.*s build=%.*s file=%s size=%llu/%llu expected_sha256=%.*s actual_sha256=%s win32=%lu bcrypt=0x%08lX\n",
+              (int)profile.fingerprint.profile_id.size(), profile.fingerprint.profile_id.data(),
+              (int)profile.fingerprint.steam_build_id.size(), profile.fingerprint.steam_build_id.data(),
+              nzl::windows_profile::status_name(file_check.status),
+              (unsigned long long)file_check.actual_size,
+              (unsigned long long)profile.fingerprint.gameassembly_file_size,
+              (int)profile.fingerprint.gameassembly_sha256.size(), profile.fingerprint.gameassembly_sha256.data(),
+              file_check.actual_sha256.c_str(), (unsigned long)file_check.win32_error,
+              (unsigned long)file_check.bcrypt_status);
+  if (!file_check.matched()) {
+    std::printf("[NZL][profile] STOP: GameAssembly file does not match the owner fingerprint; no build offsets used.\n");
+    mem.close();
+    return 6;
+  }
+  const auto remote_read = [&](uint64_t address, void* output, size_t size) {
+    return mem.read(address, output, size);
+  };
+  uint32_t image_size = 0;
+  if (!nzl::windows_profile::read_loaded_pe_size_of_image(ga, remote_read, image_size) ||
+      !nzl::game_profile::type_info_rvas_fit_image(profile, image_size)) {
+    std::printf("[NZL][profile] STOP: loaded PE header is invalid or TypeInfo RVA is outside SizeOfImage (image=0x%x).\n",
+                image_size);
+    mem.close();
+    return 6;
+  }
+  std::printf("[NZL][profile] loaded SizeOfImage=0x%x; TypeInfo RVA bounds OK; Game.GameModel uses +0x%x only (no historical fallback).\n",
+              image_size, off.game_model);
+
+  // Resolve each build-specific TypeInfo slot from the selected profile and
+  // verify its class name before scanning any object fields.
+  uint64_t klass[7] = {};
+  for (size_t i = 0; i < profile.type_info.size(); ++i) {
+    const auto& slot = profile.type_info[i];
+    if (!slot.rva.present() || slot.rva.value > UINT64_MAX - ga) {
+      std::printf("[NZL][profile] STOP: missing/out-of-range TypeInfo slot %.*s.\n",
+                  (int)slot.class_name.size(), slot.class_name.data());
+      mem.close();
+      return 6;
+    }
+    auto class_ptr = mem.ptr(ga + slot.rva.value);
+    klass[i] = class_ptr ? *class_ptr : 0;
+    const bool ok = klass[i] && klass_name_is(mem, klass[i], off.il2cpp_class_name,
+                                               slot.class_name.data());
+    std::printf("[NZL] klass %-20.*s rva=0x%llx klass=0x%llx %s\n",
+                (int)slot.class_name.size(), slot.class_name.data(),
+                (unsigned long long)slot.rva.value, (unsigned long long)klass[i],
+                ok ? "NAME_OK" : "NAME_MISMATCH");
+    if (!ok) {
+      std::printf("[NZL][profile] STOP: class validation failed; no chain offsets used.\n");
+      mem.close();
+      return 6;
+    }
+  }
+  // Heap scan uses the single 26866884 profile and validates every chain
+  // object's runtime klass before treating it as a live Game instance.
+  auto obj_klass = [&](uint64_t o) -> uint64_t {
+    auto k = o ? mem.ptr(o) : std::nullopt;
+    return k ? *k : 0;
+  };
   uint64_t game_obj = 0;
   {
     std::vector<unsigned char> buf(0x10000);
@@ -133,13 +184,14 @@ int main() {
           uint64_t v = 0; std::memcpy(&v, buf.data() + b, 8);
           if (v != klass[0]) continue;
           uint64_t cand = chunk + b;
-          // Validate as Game: GameModel klass at +0xD8 (alt +0xD0).
-          auto gm = mem.ptr(cand + off.game_model);
-          if (!gm || obj_klass(*gm) != klass[1]) { gm = mem.ptr(cand + off.game_model_alt); if (!gm || obj_klass(*gm) != klass[1]) continue; }
-          auto bm = mem.ptr(*gm + off.game_battle);
-          if (!bm || obj_klass(*bm) != klass[2]) continue;
-          auto be = mem.ptr(*bm + off.battle_entities);
-          if (!be || obj_klass(*be) != klass[3]) continue;
+          const nzl::ChainResult candidate = nzl::resolve_chain_from_game(mem, cand, off);
+          if (!candidate.ok || obj_klass(candidate.game_model) != klass[1] ||
+              obj_klass(candidate.battle_model) != klass[2] ||
+              obj_klass(candidate.battle_entities) != klass[3] ||
+              obj_klass(candidate.world_entities) != klass[4] ||
+              obj_klass(candidate.camera_model) != klass[5]) continue;
+          const auto roster = nzl::read_dict(mem, candidate.dict, off);
+          if (!roster || roster->count <= 0) continue;
           game_obj = cand;
         }
       }
@@ -160,7 +212,15 @@ int main() {
   rd3(chain.camera_model + off.cam_right, cright);
   rd3(chain.camera_model + off.cam_up, cup);
   std::printf("[NZL] camera pos=(%.2f,%.2f,%.2f) fwd=(%.2f,%.2f,%.2f)\n", cpos.x, cpos.y, cpos.z, cfwd.x, cfwd.y, cfwd.z);
-  auto players = nzl::snapshot_players(mem, chain, off, cpos);
+  const auto roster_header = nzl::read_dict(mem, chain.dict, off);
+  if (!roster_header) {
+    std::printf("[NZL][profile] STOP: dictionary layout/count/capacity sanity check failed.\n");
+    mem.close();
+    return 8;
+  }
+  std::printf("[NZL][profile] roster Count=%d array_length=%d\n",
+              roster_header->count, roster_header->array_length);
+  auto players = nzl::snapshot_players(mem, chain, off, cpos, klass[6]);
   std::printf("[NZL] players snapshot: %zu (sorted by distance)\n", players.size());
   for (auto& p : players)
     std::printf("  #%d %s pos=(%.2f,%.2f,%.2f) dist=%.1fm @0x%llx\n", p.id, p.dead ? "DEAD" : "alive",
@@ -169,6 +229,8 @@ int main() {
   // FOV field; native Camera FOV wiring is the overlay step).
   nzl::CameraView view;
   view.pos = cpos; view.fwd = cfwd; view.right = cright; view.up = cup;
+  view.head_height_m = off.head_height_m;
+  view.fov_deg = off.assumed_vertical_fov_deg;
   view.width = GetSystemMetrics(SM_CXSCREEN); view.height = GetSystemMetrics(SM_CYSCREEN);
   auto draws = nzl::build_draw_list(view, players, 500.0f);
   std::printf("[NZL] draw commands (overlay input): %zu @%dx%d fov=%.0f\n", draws.size(), view.width, view.height, view.fov_deg);

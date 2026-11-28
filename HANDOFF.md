@@ -580,3 +580,133 @@
   may still require one reboot when changing `CrashDumpEnabled`.
 - Windows PowerShell/package runtime validation is still needed; only static
   review and `git diff --check` are available in the sandbox.
+
+## Current report: only 2–3 visible players / lag (2026-11-27)
+- Owner reports the overlay shows only 2–3 players and feels delayed. The root
+  cause is not established: no current Windows build output or runtime status
+  line from the match is available in this sandbox. Earlier probe output with
+  26 dictionary entries is historical and does not prove this overlay draws 26.
+- The overlay status includes measured `data/s` and `paint/s`, worker `work` ms,
+  `Dictionary.Count/capacity`, active hash/value slots, class-matched `roster`,
+  valid nonzero `pos`, `draw`, culls (`dead/far/proj/edge`) and Dictionary batch
+  `rd-fail`. This separates root/dictionary, player-class, position, projection,
+  culling and paint symptoms; it is not a runtime result until copied from game.
+- The active offsets are now centralized in `nzl/include/nzl/game_profile.h`.
+  Attach code requires the exact recorded GameAssembly file size+SHA-256, a valid
+  loaded PE `SizeOfImage`/TypeInfo range, all seven TypeInfo class names, and
+  expected runtime klasses through the Game → camera chain. On mismatch it blocks
+  the profile; no `Game.GameModel +0xD0` or other build's offset is tried.
+- The owner fingerprint and Steam build label are historical owner-collected
+  values; neither was reread in this sandbox. The runtime gate will confirm or
+  reject the actual Windows file and print the reason. Current owner coordinates
+  use `+0x10/+0x14/+0x18`; a separate 2026-11-22 dump's `+0x10/+0x18/+0x20`
+  coordinates are recorded only as conflicting evidence, not a fallback.
+- HP/armor/role/loot/cars remain live-unverified and feature-gated off; loot XYZ
+  remain unknown. Camera quaternion has a norm check and axis fallback. Aim uses
+  SendInput and approximate heights; skeleton is a screen-space approximation;
+  `visible_only` is a screen/frustum filter, not occlusion. Instant pickup is
+  explicitly excluded.
+
+## Continuity record and current handoff (2026-11-27)
+
+### Standing workflow and owner environment
+- Owner requests that context, measured facts, source/build provenance, changed
+  files, exact checks, and the next verification step be written here after each
+  substantive turn. Never state that Windows/game testing occurred unless a fresh
+  exit code or runtime capture is present.
+- Owner's reported Windows folder is `D:\NZL Rob run`. Arena cannot write to
+  that D: drive; source transfer uses the ZIP below. Extract over the project root
+  but do not use the older `NZL-Studio-Package.zip` as an updated source archive.
+- Current branch is `arena/6d12f677-nngemes` (active), based on the user-specified
+  branch; last committed HEAD is `ce5582f`. No commit or push has been made in
+  this work turn.
+
+### Active profile and build separation
+- `nzl/include/nzl/game_profile.h` defines `kOwnerProfile26866884`, with the
+  owner-reported fingerprint: GameAssembly size `148323840`, SHA-256
+  `2dc3326915eb1e62e86dee32d9fd64f8020623f6220de747272cd7ade767b5cf`, source
+  `HANDOFF.md: NZL-Collect owner fingerprint, 2026-11-27`. This binary was not
+  present for independent re-hashing in the sandbox.
+- Owner Steam build ID 26866884 and TypeInfo RVAs came from the owner report and
+  the SDK `InsideExploit/rob-run-sdk` HEAD `86baa8e73241794b4adde64c1fe6c8085c321f65`
+  (SDK folder labelled 26866884; repo commit 2026-11-23). Seven TypeInfo slots
+  are profile-backed, including `BattleCharacterModel`; runtime names are checked.
+- Active GameModel offset is `+0xD8` only. `+0xD0` from
+  `justdoshiba/RobRunExternal@0ef798f39179708a2c128444868385d9c9a91d57`
+  belongs to build 26615022, metadata 39, SHA-256
+  `03003754353ff08380dc8e91920f2c77f7977b370d413083acfe9b4bc65c18ab`, and is
+  retained as a separate historical note, never as a fallback.
+- Other source records are corroboration, not alternate profiles:
+  `lm3684759-lang/robrun-offsets@21df822dcf0f56a9a6b75e1675fe610ee2a6f891`
+  labels its dump 2026-11-22 and reports conflicting transform XYZ
+  `+0x10/+0x18/+0x20`; `uxxx00/Robrun-offsets-newest@69c3cae40371f8082bade3b2666a094ad1302251`
+  has headers dated 2026-11-23 but no confirmed Steam build ID; its XYZ is
+  `+0x10/+0x14/+0x18`. `satanware25-beep/robrunnn@ec3b2a1844c6b23e333deed435bac150e1bdc2a7`
+  (README checked at 2026-11-15, game build unknown) reports `_battleCharacters
+  +0x18`, `_loots +0x38`, `_cars +0x60`, and character ID/transform/private-model
+  fields; it does not prove the complete owner chain or camera layout.
+- Local `/tmp/RobRunExternal/robrun_offsets.json` had metadata v39, dump path
+  `robrun26615022`, GameAssembly SHA-256
+  `03003754353ff08380dc8e91920f2c77f7977b370d413083acfe9b4bc65c18ab`; its SDK
+  JSON likewise describes build 26615022 and is not merged into the active
+  profile. Public-source URL/provenance for these local copies was not known.
+- Profile `OffsetValue` includes evidence+source. Runtime conversion rejects
+  missing-provenance and `Heuristic` values; unknown loot XYZ are unset. Cross-
+  build numeric agreement is not treated as build identity or fallback.
+
+### Latest code changes in this turn
+- `nzl/src/main_windows.cpp` and `nzl/src/overlay_windows.cpp` validate exact
+  GameAssembly fingerprint/PE bounds, profile TypeInfo class names, all chain
+  klasses and dictionary sanity. Overlay no longer uses `game_model_alt` or
+  hard-coded Game TypeInfo slots.
+- `nzl/src/probe_windows.cpp` now gets TypeInfo and all chain offsets from the
+  profile, checks owner file identity and PE bounds first, scans with `NaScan`,
+  verifies the full class chain, Dictionary Count/capacity, player positions and
+  projection counts. Its `+0xD0` fallback and hard-coded slots were removed.
+- `nzl/src/chain.cpp` reads x64 `Il2CppArray.max_length` as a full 64-bit value,
+  checks address arithmetic, validates Dictionary Count/capacity and ignores
+  free hash slots. Host tests cover truncation, Count overflow, unknown profile,
+  and heuristic offsets.
+- Overlay roster reads distinguish dictionary Count/capacity/active values from
+  class-filtered roster, valid positions and drawn entities. Optional feature
+  chains stay gated off. `nzl/CMakeLists.txt` links the profile-backed probe with
+  `nzl_core` and Windows `advapi32`/`bcrypt`.
+- `tools/NZL-BuildAll.ps1` now propagates non-zero build/test outcomes and logs
+  per-stage exit codes; it does not delete an existing `driver.sys`. The driver
+  batch script checks copy failure.
+
+### Checks run in sandbox (2026-11-27)
+- Re-run after the final profile, memory-header and Windows build-script edits:
+  direct g++ C++20 builds of `test_chain`, `test_pipeline`, and `test_profile` all
+  passed; Python `py_compile` and all 12 `unittest` tests passed. `git diff --check`
+  passed.
+- Zig 0.13.0 `x86_64-windows-gnu` compile and link passed for
+  `nzl_overlay.exe`, `nzl_studio.exe`, and `nzl_probe.exe` (all PE machine
+  `0x8664`, each compile/link exit code 0). Temporary binaries are in `/tmp` only;
+  this GNU cross-build does not establish native Windows or runtime success.
+- `cmake`, PowerShell, MSVC, and WDK are unavailable in this sandbox; therefore
+  `NZL-BuildAll.ps1`, native MSVC/WDK build, driver build and packaging workflow
+  have NOT run here. No game process or live ESP counters were tested.
+
+### Source archive / immediate next step
+- Current deliverable is `build/NZL-Studio-updated-source.zip`, an ignored source
+  archive built from current tracked working-tree files plus non-ignored untracked
+  source additions. It excludes
+  `.git`, the ignored `build/` directory, `HANDOFF.md` (sandbox-only handoff and
+  archive verification notes), and Windows executables/driver/build binaries.
+  In particular, the tracked `RobRun.exe` (1,900,544-byte MZ/PE) was checked and
+  deliberately excluded; it remains untouched in the repository. The ZIP was
+  verified to contain all three new profile source/test files and no PE/driver
+  binaries. `unzip -t` passed. Final archive: 88 files, 420,258 uncompressed
+  bytes, 157,302 ZIP bytes, SHA-256
+  `8548128034a5bde2847aef5579e4ffb817bd76ec71fb6e6b0937bb0ab7983ac1`. A second
+  packaging pass produced a byte-identical ZIP.
+- Download the ZIP from Arena and save it as
+  `D:\NZL Rob run\NZL-Studio-updated-source.zip`; extract it over that project
+  root. Then run from Windows PowerShell:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-BuildAll.ps1`.
+  Report the script's actual final exit code and per-stage output. This sandbox's
+  GNU cross-build is not a substitute for the requested native Windows build.
+- On a successful Windows build, start the app, enter a match, and send the full
+  status line containing `data/paint/dict/roster/pos/draw` (and any error text).
+  Until then the 2–3-player/lag cause and live game compatibility remain unknown.

@@ -1,54 +1,205 @@
 #include "nzl/chain.h"
+
 #include <cmath>
+#include <limits>
+
 namespace nzl {
-bool plausible_ptr(uint64_t p){ return p>0x10000 && p<0x00007FFFFFFFFFFFULL && (p&7)==0; }
-std::optional<uint64_t> follow(const IMemory& m, uint64_t base, uint32_t off, const char* stage, ChainResult& r){
-  if(!plausible_ptr(base)){ r.stage=stage; return std::nullopt; }
-  auto v=m.ptr(base+off); if(!v || !plausible_ptr(*v)){ r.stage=stage; return std::nullopt; } return v;
+
+bool plausible_ptr(uint64_t pointer) {
+  return pointer > 0x10000 && pointer < 0x00007FFFFFFFFFFFULL &&
+         (pointer & 7) == 0;
 }
-static ChainResult resolve_from_game(const IMemory& m, uint64_t ue, uint64_t game, uint32_t gm_off, const Offsets& o){
-  ChainResult r; r.unity_entry=ue; r.game=game;
-  auto gm=follow(m,game,gm_off,"Game.GameModel",r); if(!gm) return r; r.game_model=*gm;
-  auto bm=follow(m,*gm,o.game_battle,"GameModel._battleModel",r); if(!bm) return r; r.battle_model=*bm;
-  auto be=follow(m,*bm,o.battle_entities,"BattleModel.BattleEntitiesModel",r); if(!be) return r; r.battle_entities=*be;
-  auto we=follow(m,*be,o.battle_world,"BattleEntitiesModel._worldEntitiesModel",r); if(!we) return r; r.world_entities=*we;
-  auto d=follow(m,*we,o.wem_battle_chars,"WorldEntitiesModel._battleCharacters",r); if(!d) return r; r.dict=*d;
-  auto cam=follow(m,*bm,o.battle_camera,"BattleModel.BattleCameraModel",r); if(!cam) return r; r.camera_model=*cam;
-  r.ok=true; r.stage="ok"; return r;
+
+namespace {
+
+bool add_offset(uint64_t base, uint32_t offset, uint64_t& address) {
+  if (base > std::numeric_limits<uint64_t>::max() - offset) return false;
+  address = base + offset;
+  return true;
 }
-ChainResult resolve_chain_from_game(const IMemory& m, uint64_t game, const Offsets& o){
-  ChainResult a=resolve_from_game(m,game,game,o.game_model,o);
-  if(a.ok) return a;
-  if(o.game_model_alt && o.game_model_alt!=o.game_model){
-    ChainResult b=resolve_from_game(m,game,game,o.game_model_alt,o);
-    if(b.ok) return b;
+
+ChainResult resolve_from_game(const IMemory& memory, uint64_t unity_entry,
+                              uint64_t game, const Offsets& offsets) {
+  ChainResult result;
+  result.unity_entry = unity_entry;
+  result.game = game;
+  if (!offsets.profile_configured) {
+    result.stage = "profile.unconfigured";
+    return result;
   }
-  return a;
+
+  auto game_model = follow(memory, game, offsets.game_model,
+                           "Game.GameModel", result);
+  if (!game_model) return result;
+  result.game_model = *game_model;
+
+  auto battle_model = follow(memory, *game_model, offsets.game_battle,
+                             "GameModel._battleModel", result);
+  if (!battle_model) return result;
+  result.battle_model = *battle_model;
+
+  auto battle_entities = follow(memory, *battle_model, offsets.battle_entities,
+                                "BattleModel.BattleEntitiesModel", result);
+  if (!battle_entities) return result;
+  result.battle_entities = *battle_entities;
+
+  auto world_entities = follow(memory, *battle_entities, offsets.battle_world,
+                               "BattleEntitiesModel._worldEntitiesModel", result);
+  if (!world_entities) return result;
+  result.world_entities = *world_entities;
+
+  auto dictionary = follow(memory, *world_entities, offsets.wem_battle_chars,
+                           "WorldEntitiesModel._battleCharacters", result);
+  if (!dictionary) return result;
+  result.dict = *dictionary;
+
+  auto camera = follow(memory, *battle_model, offsets.battle_camera,
+                       "BattleModel.BattleCameraModel", result);
+  if (!camera) return result;
+  result.camera_model = *camera;
+
+  result.ok = true;
+  result.stage = "ok";
+  return result;
 }
-ChainResult resolve_chain(const IMemory& m, uint64_t ue, const Offsets& o){
-  ChainResult r; r.unity_entry=ue;
-  auto game=follow(m,ue,o.unity_entry_game,"UnityEntry._game",r); if(!game) return r;
-  ChainResult a=resolve_chain_from_game(m,*game,o);
-  a.unity_entry=ue;
-  return a;
+
+}  // namespace
+
+std::optional<uint64_t> follow(const IMemory& memory, uint64_t base,
+                               uint32_t offset, const char* stage,
+                               ChainResult& result) {
+  uint64_t address = 0;
+  if (!plausible_ptr(base) || !add_offset(base, offset, address)) {
+    result.stage = stage;
+    return std::nullopt;
+  }
+
+  auto value = memory.ptr(address);
+  if (!value || !plausible_ptr(*value)) {
+    result.stage = stage;
+    return std::nullopt;
+  }
+  return value;
 }
-std::optional<DictHeader> read_dict(const IMemory& m, uint64_t dict, const Offsets& o){
-  if(!plausible_ptr(dict)) return std::nullopt; DictHeader h;
-  auto e=m.ptr(dict+o.dict_entries); auto c=m.i32(dict+o.dict_count);
-  if(!e||!c||!plausible_ptr(*e)||*c<0||*c>10000) return std::nullopt; h.entries=*e; h.count=*c; return h;
+
+ChainResult resolve_chain_from_game(const IMemory& memory, uint64_t game,
+                                    const Offsets& offsets) {
+  return resolve_from_game(memory, game, game, offsets);
 }
-std::optional<uint64_t> dict_value_at(const IMemory& m, const DictHeader& h, int index, const Offsets& o){
-  if(index<0||index>=h.count) return std::nullopt;
-  uint64_t entry=h.entries+0x20ULL+ (uint64_t)index*o.dict_stride; // IL2CPP array data @+0x20
-  auto hash=m.i32(entry); if(!hash||*hash<0) return std::nullopt;
-  auto v=m.ptr(entry+0x10); if(!v||!plausible_ptr(*v)) return std::nullopt; return v;
+
+ChainResult resolve_chain(const IMemory& memory, uint64_t unity_entry,
+                          const Offsets& offsets) {
+  ChainResult result;
+  result.unity_entry = unity_entry;
+  if (!offsets.profile_configured) {
+    result.stage = "profile.unconfigured";
+    return result;
+  }
+
+  auto game = follow(memory, unity_entry, offsets.unity_entry_game,
+                     "UnityEntry._game", result);
+  if (!game) return result;
+  return resolve_chain_from_game(memory, *game, offsets);
 }
-std::optional<Vec3f> read_vec3(const IMemory& m, uint64_t a){ auto x=m.f32(a),y=m.f32(a+4),z=m.f32(a+8); if(!x||!y||!z||!std::isfinite(*x)||!std::isfinite(*y)||!std::isfinite(*z)) return std::nullopt; return Vec3f{*x,*y,*z}; }
-std::optional<Vec3f> read_char_pos(const IMemory& m, uint64_t ch, const Offsets& o){
-  if(!plausible_ptr(ch)) return std::nullopt;
-  auto t=m.ptr(ch+o.char_transform); if(!t||!plausible_ptr(*t)) return std::nullopt;
-  auto x=m.f32(*t+o.ctm_x),y=m.f32(*t+o.ctm_y),z=m.f32(*t+o.ctm_z);
-  if(!x||!y||!z||!std::isfinite(*x)||!std::isfinite(*y)||!std::isfinite(*z)) return std::nullopt;
-  if(*x==0&&*y==0&&*z==0) return std::nullopt; return Vec3f{*x,*y,*z};
+
+std::optional<DictHeader> read_dict(const IMemory& memory, uint64_t dict,
+                                    const Offsets& offsets) {
+  if (!offsets.profile_configured || !plausible_ptr(dict) ||
+      offsets.max_dict_entries == 0) return std::nullopt;
+
+  uint64_t entries_address = 0;
+  uint64_t count_address = 0;
+  if (!add_offset(dict, offsets.dict_entries, entries_address) ||
+      !add_offset(dict, offsets.dict_count, count_address)) return std::nullopt;
+
+  auto entries = memory.ptr(entries_address);
+  auto count = memory.i32(count_address);
+  if (!entries || !plausible_ptr(*entries) || !count || *count < 0 ||
+      static_cast<uint32_t>(*count) > offsets.max_dict_entries) return std::nullopt;
+
+  uint64_t length_address = 0;
+  if (!add_offset(*entries, offsets.array_length, length_address))
+    return std::nullopt;
+  // Il2CppArray.max_length is size_t on the active x64 process. Reading only
+  // four bytes could accept a truncated or corrupt capacity as a valid array.
+  auto array_length = memory.ptr(length_address);
+  if (!array_length || *array_length > offsets.max_dict_entries ||
+      *array_length > std::numeric_limits<uint32_t>::max() ||
+      static_cast<uint64_t>(*count) > *array_length) return std::nullopt;
+
+  return DictHeader{*entries, *count, static_cast<uint32_t>(*array_length)};
 }
+
+std::optional<uint64_t> dict_value_at(const IMemory& memory,
+                                      const DictHeader& header, int index,
+                                      const Offsets& offsets) {
+  if (index < 0 || header.count < 0 ||
+      static_cast<uint32_t>(index) >= header.array_length ||
+      index >= header.count ||
+      static_cast<uint64_t>(header.count) > header.array_length ||
+      !plausible_ptr(header.entries) || offsets.dict_stride == 0)
+    return std::nullopt;
+
+  uint64_t array_data = 0;
+  if (!add_offset(header.entries, offsets.array_data, array_data) ||
+      static_cast<uint64_t>(index) >
+          (std::numeric_limits<uint64_t>::max() - array_data) /
+              offsets.dict_stride) return std::nullopt;
+  const uint64_t entry = array_data +
+                         static_cast<uint64_t>(index) * offsets.dict_stride;
+
+  uint64_t hash_address = 0;
+  uint64_t value_address = 0;
+  if (!add_offset(entry, offsets.dict_hash, hash_address) ||
+      !add_offset(entry, offsets.dict_value, value_address)) return std::nullopt;
+
+  auto hash = memory.i32(hash_address);
+  if (!hash || *hash < 0) return std::nullopt;
+  auto value = memory.ptr(value_address);
+  if (!value || !plausible_ptr(*value)) return std::nullopt;
+  return value;
 }
+
+std::optional<Vec3f> read_vec3(const IMemory& memory, uint64_t address) {
+  // Vector fields may be four-byte aligned (for example camera +0x3C) even
+  // though object pointers themselves are eight-byte aligned.
+  if (address <= 0x10000 || address >= 0x00007FFFFFFFFFFFULL ||
+      address > std::numeric_limits<uint64_t>::max() - 8) return std::nullopt;
+  auto x = memory.f32(address);
+  auto y = memory.f32(address + 4);
+  auto z = memory.f32(address + 8);
+  if (!x || !y || !z || !std::isfinite(*x) || !std::isfinite(*y) ||
+      !std::isfinite(*z)) return std::nullopt;
+  return Vec3f{*x, *y, *z};
+}
+
+std::optional<Vec3f> read_char_pos(const IMemory& memory, uint64_t character,
+                                   const Offsets& offsets) {
+  if (!offsets.profile_configured || !plausible_ptr(character))
+    return std::nullopt;
+
+  uint64_t transform_address = 0;
+  if (!add_offset(character, offsets.char_transform, transform_address))
+    return std::nullopt;
+  auto transform = memory.ptr(transform_address);
+  if (!transform || !plausible_ptr(*transform)) return std::nullopt;
+
+  uint64_t x_address = 0;
+  uint64_t y_address = 0;
+  uint64_t z_address = 0;
+  if (!add_offset(*transform, offsets.ctm_x, x_address) ||
+      !add_offset(*transform, offsets.ctm_y, y_address) ||
+      !add_offset(*transform, offsets.ctm_z, z_address)) return std::nullopt;
+
+  auto x = memory.f32(x_address);
+  auto y = memory.f32(y_address);
+  auto z = memory.f32(z_address);
+  constexpr float kMaxWorldCoordinate = 1.0e6f;
+  if (!x || !y || !z || !std::isfinite(*x) || !std::isfinite(*y) ||
+      !std::isfinite(*z) || std::fabs(*x) > kMaxWorldCoordinate ||
+      std::fabs(*y) > kMaxWorldCoordinate || std::fabs(*z) > kMaxWorldCoordinate ||
+      (*x == 0 && *y == 0 && *z == 0)) return std::nullopt;
+  return Vec3f{*x, *y, *z};
+}
+
+}  // namespace nzl

@@ -7,7 +7,9 @@
 namespace nzl {
 struct CameraView {
   Vec3f pos{}, fwd{0,0,1}, right{1,0,0}, up{0,1,0};
-  float fov_deg = 90.0f; int width = 1920, height = 1080;
+  float fov_deg = 90.0f;
+  float head_height_m = 1.80f;
+  int width = 1920, height = 1080;
 };
 struct PlayerSnap {
   uint64_t addr = 0; int32_t id = 0; Vec3f pos{}; bool dead = false; float dist = 0;
@@ -23,7 +25,9 @@ struct DrawCmd {
   uint32_t color = 0xFFB388FF;           // NZL purple RGBA
 };
 // Enumerate _battleCharacters dict -> player snapshots (positions via Transform).
-std::vector<PlayerSnap> snapshot_players(const IMemory& m, const ChainResult& chain, const Offsets& o, const Vec3f& local_pos);
+std::vector<PlayerSnap> snapshot_players(const IMemory& m, const ChainResult& chain,
+                                         const Offsets& o, const Vec3f& local_pos,
+                                         uint64_t expected_character_class = 0);
 // Unity LH, Y-up, +Z forward, vertical FOV. 20% NDC margin like reference.
 bool world_to_screen(const CameraView& c, const Vec3f& w, float& sx, float& sy, float& depth);
 // Box (feet->head 1.8m) + name/dist text commands for on-screen players.

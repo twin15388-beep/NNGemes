@@ -1,40 +1,166 @@
 #pragma once
+#include "nzl/game_profile.h"
 #include "nzl/memory.h"
 #include <optional>
 #include <string>
 namespace nzl {
-struct Vec3f{ float x=0,y=0,z=0; };
+struct Vec3f { float x = 0, y = 0, z = 0; };
 struct ChainResult {
-  uint64_t unity_entry=0, game=0, game_model=0, battle_model=0, battle_entities=0, world_entities=0, dict=0, camera_model=0;
-  bool ok=false; std::string stage; // where it failed / "ok"
+  uint64_t unity_entry = 0, game = 0, game_model = 0, battle_model = 0,
+           battle_entities = 0, world_entities = 0, dict = 0, camera_model = 0;
+  bool ok = false;
+  std::string stage;
 };
-// Root must be obtained from LIVE dump (docs/EXTRACT.md): either
-// TypeInfo slot -> Il2CppClass -> static_fields(+0xB8) -> UnityEntry instance,
-// or GOM object. We do NOT hardcode old static RVA (conflict C1).
-// offsets below mirror cpp/include/robrun/config.h VERIFIED fields.
+// Runtime numeric offsets are copied from one build profile in game_profile.h.
+// Do not add build-specific literals here; profile identity and evidence are
+// checked by the Windows attach path before these values are used.
+constexpr uint32_t profile_offset32(game_profile::OffsetValue value) {
+  return game_profile::offset_usable32(value)
+             ? static_cast<uint32_t>(value.value)
+             : 0;
+}
+
 struct Offsets {
-  // Game.GameModel moved between Steam builds of the same Unity version:
-  // 0xD0 in builds <=26726105 (17 Nov), 0xD8 in >=26807668 (20 Nov) -
-  // cross-checked in the public per-build IL2CPP SDK dumps of this game.
-  // resolve_chain tries the primary then the alt and keeps whichever
-  // yields a fully sane chain (dict + camera), so a stale value cannot
-  // silently win. Build match is still UNVERIFIED until live chain check.
-  uint32_t unity_entry_game=0x28, game_model=0xD8, game_model_alt=0xD0, game_battle=0x10, battle_entities=0x90;
-  uint32_t battle_world=0x60, battle_camera=0x358, wem_battle_chars=0x18;
-  uint32_t dict_entries=0x18, dict_count=0x20, dict_stride=0x18;
-  uint32_t char_id=0x38, char_transform=0x58, char_is_dead=0xF0;
-  uint32_t ctm_x=0x10, ctm_y=0x14, ctm_z=0x18;
-  uint32_t cam_pos=0x10, cam_fwd=0x3C, cam_right=0x48, cam_up=0x54;
+  std::string_view profile_id{};
+  bool profile_configured = false;
+  uint32_t unity_entry_game = 0;
+  uint32_t game_model = 0;
+  uint32_t game_battle = 0;
+  uint32_t battle_entities = 0;
+  uint32_t battle_world = 0;
+  uint32_t battle_camera = 0;
+  uint32_t wem_battle_chars = 0;
+  uint32_t dict_entries = 0;
+  uint32_t dict_count = 0;
+  uint32_t array_length = 0;
+  uint32_t array_data = 0;
+  uint32_t dict_stride = 0;
+  uint32_t dict_hash = 0;
+  uint32_t dict_value = 0;
+  uint32_t max_dict_entries = 0;
+  uint32_t char_id = 0;
+  uint32_t char_transform = 0;
+  uint32_t char_is_dead = 0;
+  uint32_t ctm_x = 0;
+  uint32_t ctm_y = 0;
+  uint32_t ctm_z = 0;
+  uint32_t il2cpp_class_name = 0;
+  uint32_t cam_pos = 0;
+  uint32_t cam_orientation = 0;
+  uint32_t cam_look_at_orientation = 0;
+  uint32_t cam_fwd = 0;
+  uint32_t cam_right = 0;
+  uint32_t cam_up = 0;
+  uint32_t character_private_model = 0;
+  uint32_t health_model = 0;
+  uint32_t health_data = 0;
+  uint32_t health_value = 0;
+  uint32_t health_max_value = 0;
+  uint32_t armor_primitive = 0;
+  uint32_t primitive_data = 0;
+  uint32_t primitive_value = 0;
+  uint32_t role_primitive = 0;
+  uint32_t role_description = 0;
+  uint32_t role_index = 0;
+  uint32_t loot_dictionary = 0;
+  uint32_t loot_transform = 0;
+  uint32_t loot_position_x = 0;
+  uint32_t loot_position_y = 0;
+  uint32_t loot_position_z = 0;
+  bool loot_positions_configured = false;
+  uint32_t cars_dictionary = 0;
+  uint32_t car_transform = 0;
+  uint32_t car_position = 0;
+  bool hp_live_verified = false;
+  bool armor_live_verified = false;
+  bool role_live_verified = false;
+  bool loot_live_verified = false;
+  bool cars_live_verified = false;
+  float head_height_m = 1.80f;
+  float aim_head_height_m = 1.75f;
+  float aim_chest_height_m = 1.30f;
+  float aim_pelvis_height_m = 0.95f;
+  float assumed_vertical_fov_deg = 90.0f;
+
+  Offsets() : Offsets(game_profile::kOwnerProfile26866884) {}
+  explicit Offsets(const game_profile::GameProfile& p)
+      : profile_id(p.fingerprint.profile_id),
+        profile_configured(game_profile::fingerprint_configured(p) &&
+                           game_profile::core_offsets_configured(p) &&
+                           game_profile::type_info_names_configured(p)),
+        unity_entry_game(profile_offset32(p.chain.unity_entry_game)),
+        game_model(profile_offset32(p.chain.game_game_model)),
+        game_battle(profile_offset32(p.chain.game_model_battle)),
+        battle_entities(profile_offset32(p.chain.battle_model_entities)),
+        battle_world(profile_offset32(p.chain.battle_entities_world)),
+        battle_camera(profile_offset32(p.chain.battle_model_camera)),
+        wem_battle_chars(profile_offset32(p.chain.world_entities_characters)),
+        dict_entries(profile_offset32(p.dictionary.object_entries)),
+        dict_count(profile_offset32(p.dictionary.object_count)),
+        array_length(profile_offset32(p.dictionary.entries_array_length)),
+        array_data(profile_offset32(p.dictionary.entries_array_data)),
+        dict_stride(profile_offset32(p.dictionary.entry_stride)),
+        dict_hash(profile_offset32(p.dictionary.entry_hash)),
+        dict_value(profile_offset32(p.dictionary.entry_value)),
+        max_dict_entries(p.dictionary.max_entries),
+        char_id(profile_offset32(p.character.id)),
+        char_transform(profile_offset32(p.character.transform)),
+        char_is_dead(profile_offset32(p.character.is_dead)),
+        ctm_x(profile_offset32(p.character.transform_x)),
+        ctm_y(profile_offset32(p.character.transform_y)),
+        ctm_z(profile_offset32(p.character.transform_z)),
+        il2cpp_class_name(profile_offset32(p.character.il2cpp_class_name)),
+        cam_pos(profile_offset32(p.camera.position)),
+        cam_orientation(profile_offset32(p.camera.orientation)),
+        cam_look_at_orientation(profile_offset32(p.camera.look_at_orientation)),
+        cam_fwd(profile_offset32(p.camera.forward)),
+        cam_right(profile_offset32(p.camera.right)),
+        cam_up(profile_offset32(p.camera.up)),
+        character_private_model(profile_offset32(p.optional_features.character_private_model)),
+        health_model(profile_offset32(p.optional_features.health_model)),
+        health_data(profile_offset32(p.optional_features.health_data)),
+        health_value(profile_offset32(p.optional_features.health_value)),
+        health_max_value(profile_offset32(p.optional_features.health_max_value)),
+        armor_primitive(profile_offset32(p.optional_features.armor_primitive)),
+        primitive_data(profile_offset32(p.optional_features.primitive_data)),
+        primitive_value(profile_offset32(p.optional_features.primitive_value)),
+        role_primitive(profile_offset32(p.optional_features.role_primitive)),
+        role_description(profile_offset32(p.optional_features.role_description)),
+        role_index(profile_offset32(p.optional_features.role_index)),
+        loot_dictionary(profile_offset32(p.optional_features.loot_dictionary)),
+        loot_transform(profile_offset32(p.optional_features.loot_transform)),
+        loot_position_x(profile_offset32(p.optional_features.loot_position_x)),
+        loot_position_y(profile_offset32(p.optional_features.loot_position_y)),
+        loot_position_z(profile_offset32(p.optional_features.loot_position_z)),
+        loot_positions_configured(p.optional_features.loot_position_x.present() &&
+                                  p.optional_features.loot_position_y.present() &&
+                                  p.optional_features.loot_position_z.present()),
+        cars_dictionary(profile_offset32(p.optional_features.cars_dictionary)),
+        car_transform(profile_offset32(p.optional_features.car_transform)),
+        car_position(profile_offset32(p.optional_features.car_position)),
+        hp_live_verified(p.optional_features.hp_live_verified),
+        armor_live_verified(p.optional_features.armor_live_verified),
+        role_live_verified(p.optional_features.role_live_verified),
+        loot_live_verified(p.optional_features.loot_live_verified),
+        cars_live_verified(p.optional_features.cars_live_verified),
+        head_height_m(p.head_height_m),
+        aim_head_height_m(p.aim_head_height_m),
+        aim_chest_height_m(p.aim_chest_height_m),
+        aim_pelvis_height_m(p.aim_pelvis_height_m),
+        assumed_vertical_fov_deg(p.assumed_vertical_fov_deg) {}
 };
-std::optional<uint64_t> follow(const IMemory& m, uint64_t base, uint32_t off, const char* stage, ChainResult& r);
+std::optional<uint64_t> follow(const IMemory& m, uint64_t base, uint32_t off,
+                               const char* stage, ChainResult& r);
 ChainResult resolve_chain(const IMemory& m, uint64_t unity_entry_instance, const Offsets& o);
-// Root found directly as a live Game object (TypeInfo-klass heap scan,
-// validated live in probe-9): chain from Game without UnityEntry.
 ChainResult resolve_chain_from_game(const IMemory& m, uint64_t game, const Offsets& o);
-struct DictHeader { uint64_t entries=0; int32_t count=0; };
+struct DictHeader {
+  uint64_t entries = 0;
+  int32_t count = 0;         // Dictionary's initialized-entry bound
+  uint32_t array_length = 0;  // validated x64 Il2CppArray capacity
+};
 std::optional<DictHeader> read_dict(const IMemory& m, uint64_t dict, const Offsets& o);
-// entries: hash i32 @+0, next i32 @+4, key i32 @+8, value ptr @+0x10, stride 0x18
-std::optional<uint64_t> dict_value_at(const IMemory& m, const DictHeader& h, int index, const Offsets& o);
+std::optional<uint64_t> dict_value_at(const IMemory& m, const DictHeader& h,
+                                      int index, const Offsets& o);
 std::optional<Vec3f> read_char_pos(const IMemory& m, uint64_t character, const Offsets& o);
 std::optional<Vec3f> read_vec3(const IMemory& m, uint64_t addr);
 }

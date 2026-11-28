@@ -4,12 +4,9 @@
 // draggable menu window receives mouse input and releases game focus/cursor.
 // INSERT toggles the menu; END exits.
 // Aim: hold RIGHT MOUSE, nearest alive head to crosshair inside Aim FOV.
-// Projection basis: BattleCameraModel LookAtCameraOrientation quaternion
-// (menu can switch to Forward/Right/Up fields). HP/Armor chains are from
-// the build-matched dump but marked UNVERIFIED until the owner confirms
-// the bars match in game: HP = char+0x10 PrivateModel -> +0x1B0 Health
-// -> +0x10 primitive data -> +0x18 value, max @Health+0x20;
-// Armor flag = char+0x1B8 HasArmor primitive -> +0x10 -> +0x18.
+// Projection basis: profile-selected BattleCameraModel quaternion, with the
+// profile camera axes as a sanity/fallback path. Optional HP/armor/role chains
+// remain gated off until their layouts are confirmed against a live match.
 #ifndef _WIN32
 #error "Windows only"
 #endif
@@ -33,12 +30,13 @@
 #include "nzl/chain.h"
 #include "nzl/driver_memory.h"
 #include "nzl/esp_pipeline.h"
+#include "nzl/windows_profile.h"
 #include "../client/sc_client.h"
 
 static DWORD find_pid(const wchar_t* name) {
   HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (s == INVALID_HANDLE_VALUE) return 0;
-  PROCESSENTRY32W e{sizeof(e)}; DWORD pid = 0;
+  PROCESSENTRY32W e{}; e.dwSize = sizeof(e); DWORD pid = 0;
   if (Process32FirstW(s, &e)) do { if (_wcsicmp(e.szExeFile, name) == 0) { pid = e.th32ProcessID; break; } } while (Process32NextW(s, &e));
   CloseHandle(s); return pid;
 }
@@ -69,13 +67,15 @@ static uint64_t find_gameassembly(DWORD pid) {
   }
   return 0;
 }
-static bool klass_name_is(const nzl::IMemory& m, uint64_t klass, const char* want) {
-  auto np = m.ptr(klass + 0x10);
-  if (!np || !*np) return false;
-  char nm[64] = {};
-  if (!m.read(*np, nm, sizeof(nm) - 1)) return false;
-  nm[sizeof(nm) - 1] = 0;
-  return std::strcmp(nm, want) == 0;
+static bool klass_name_is(const nzl::IMemory& m, uint64_t klass,
+                          uint32_t name_offset, const char* want) {
+  if (klass > UINT64_MAX - name_offset) return false;
+  auto name_ptr = m.ptr(klass + name_offset);
+  if (!name_ptr || !*name_ptr) return false;
+  char name[64] = {};
+  if (!m.read(*name_ptr, name, sizeof(name) - 1)) return false;
+  name[sizeof(name) - 1] = 0;
+  return std::strcmp(name, want) == 0;
 }
 static nzl::Vec3f normalize(nzl::Vec3f v) {
   float l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -107,11 +107,12 @@ struct Ctx {
   nzl::DriverMemory* mem = nullptr;
   nzl::Offsets off;
   nzl::ChainResult chain;
+  uint64_t player_class = 0;
   std::vector<RenderEnt> render;
   std::vector<LootEnt> loot;
   std::vector<CarEnt> cars;
   nzl::Vec3f cam_fwd{0, 0, 1}, cam_right{1, 0, 0}, radar_cam{};
-  float fov = 90.0f;
+  float fov = nzl::game_profile::kOwnerProfile26866884.assumed_vertical_fov_deg;
   int width = 1920, height = 1080;
   // UI state is owned by the window thread; worker-published data is protected by g_state_mutex.
   bool menu = false;
@@ -124,7 +125,7 @@ struct Ctx {
   bool show_dead = false, show_boxes = true, show_skeleton = false,
        show_text = true, show_hp = false, show_armor = false,
        show_loot = false, show_radar = false, aim = false, basis_quat = true;
-  bool show_roles = true, show_cars = false, tracers = false, visible_only = false;
+  bool show_roles = false, show_cars = false, tracers = false, visible_only = false;
   float max_dist = 500.0f, aim_fov = 150.0f, aim_smooth = 5.0f, radar_range = 120.0f;
   int aim_bone = 0;   // 0 Head 1 Chest 2 Pelvis
   int aim_key = 0;    // index into kAimKeys
@@ -138,32 +139,109 @@ static const char* kBoneNames[] = {"Head", "Chest", "Pelvis"};
 static const char* kRoleNames[] = {"SETTLER", "ROBBER", "COP", "CITIZEN", "PRISONER"};
 static std::mutex g_state_mutex;
 static std::atomic_bool g_stop{false};
-// Generic dictionary walk: entries array length, skip hash<0 slots,
-// batched in chunks respecting the 64-item driver batch cap.
-static std::vector<uint64_t> dict_values(Ctx& c, uint64_t dict) {
+static std::atomic<uint32_t> g_overlay_paint_millifps{0};
+struct DictionaryStats {
+  uint32_t count = 0, capacity = 0;
+  size_t active_values = 0, class_matches = 0, read_failures = 0;
+  bool header_valid = false;
+};
+// Read only initialized Dictionary slots, enforce the profile bounds, and
+// optionally retain values whose object header matches a live class pointer.
+// Stats separate raw Dictionary.Count/capacity from valid pointers and the
+// expected player class so the owner can see where a small roster originates.
+static std::vector<uint64_t> dict_values(Ctx& c, uint64_t dict,
+                                         uint64_t expected_value_class = 0,
+                                         DictionaryStats* stats = nullptr) {
+  if (stats) *stats = {};
   std::vector<uint64_t> out;
-  if (!dict) return out;
-  auto entries = c.mem->ptr(dict + c.off.dict_entries);
-  if (!entries || !*entries) return out;
-  uint64_t arrlen = 0;
-  if (!c.mem->read(*entries + 0x18, &arrlen, 8)) return out;
-  int total = (int)(arrlen > 2048 ? 2048 : arrlen);
+  if (!c.mem || !c.off.profile_configured || !nzl::plausible_ptr(dict) ||
+      dict > UINT64_MAX - c.off.dict_entries ||
+      dict > UINT64_MAX - c.off.dict_count) return out;
+
+  const auto entries = c.mem->ptr(dict + c.off.dict_entries);
+  const auto count = c.mem->i32(dict + c.off.dict_count);
+  if (!entries || !nzl::plausible_ptr(*entries) || !count || *count < 0 ||
+      static_cast<uint32_t>(*count) > c.off.max_dict_entries ||
+      *entries > UINT64_MAX - c.off.array_length) return out;
+
+  // Il2CppArray.max_length is size_t in the x64 target; do not accept a
+  // four-byte truncated capacity as a valid header.
+  const auto capacity = c.mem->ptr(*entries + c.off.array_length);
+  if (!capacity || *capacity > c.off.max_dict_entries ||
+      static_cast<uint64_t>(*count) > *capacity || c.off.dict_stride == 0 ||
+      *entries > UINT64_MAX - c.off.array_data) return out;
+
+  if (stats) {
+    stats->header_valid = true;
+    stats->count = static_cast<uint32_t>(*count);
+    stats->capacity = static_cast<uint32_t>(*capacity);
+  }
+  const uint64_t array_data = *entries + c.off.array_data;
+  const int total = *count;
   for (int base = 0; base < total; base += 24) {
-    int n = (total - base) < 24 ? (total - base) : 24;
-    std::vector<NaItem> items; std::vector<uint8_t> buf(n * 16, 0);
-    for (int i = 0; i < n; i++) {
-      uint64_t e = *entries + 0x20ULL + (uint64_t)(base + i) * c.off.dict_stride;
-      items.push_back(NaItem{e, (uint32_t)(i * 16), 4});
-      items.push_back(NaItem{e + 0x10, (uint32_t)(i * 16 + 8), 8});
+    const int n = std::min(24, total - base);
+    std::vector<NaItem> items;
+    std::vector<uint8_t> buffer(static_cast<size_t>(n) * 16, 0);
+    items.reserve(static_cast<size_t>(n) * 2);
+    bool addresses_ok = true;
+    for (int i = 0; i < n; ++i) {
+      const uint64_t index = static_cast<uint64_t>(base + i);
+      if (index > (UINT64_MAX - array_data) / c.off.dict_stride) {
+        addresses_ok = false;
+        break;
+      }
+      const uint64_t entry = array_data + index * c.off.dict_stride;
+      if (entry > UINT64_MAX - c.off.dict_hash ||
+          entry > UINT64_MAX - c.off.dict_value) {
+        addresses_ok = false;
+        break;
+      }
+      items.push_back(NaItem{entry + c.off.dict_hash,
+                             static_cast<uint32_t>(i * 16), 4});
+      items.push_back(NaItem{entry + c.off.dict_value,
+                             static_cast<uint32_t>(i * 16 + 8), 8});
     }
-    if (!NaBatchRead(c.pid, items.data(), (uint32_t)items.size(), buf.data(), n * 16)) continue;
-    for (int i = 0; i < n; i++) {
-      int32_t hash = 0; uint64_t v = 0;
-      std::memcpy(&hash, buf.data() + i * 16, 4);
-      std::memcpy(&v, buf.data() + i * 16 + 8, 8);
-      if (hash >= 0 && v) out.push_back(v);
+    if (!addresses_ok ||
+        !NaBatchRead(c.pid, items.data(), static_cast<uint32_t>(items.size()),
+                     buffer.data(), static_cast<uint32_t>(buffer.size()))) {
+      if (stats) ++stats->read_failures;
+      continue;
+    }
+
+    std::vector<uint64_t> values;
+    values.reserve(n);
+    for (int i = 0; i < n; ++i) {
+      int32_t hash = -1;
+      uint64_t value = 0;
+      std::memcpy(&hash, buffer.data() + static_cast<size_t>(i) * 16, 4);
+      std::memcpy(&value, buffer.data() + static_cast<size_t>(i) * 16 + 8, 8);
+      if (hash >= 0 && nzl::plausible_ptr(value)) values.push_back(value);
+    }
+    if (stats) stats->active_values += values.size();
+    if (!expected_value_class) {
+      out.insert(out.end(), values.begin(), values.end());
+      continue;
+    }
+
+    if (values.empty()) continue;
+    std::vector<NaItem> class_items;
+    std::vector<uint8_t> class_buffer(values.size() * sizeof(uint64_t), 0);
+    class_items.reserve(values.size());
+    for (size_t i = 0; i < values.size(); ++i)
+      class_items.push_back(NaItem{values[i], static_cast<uint32_t>(i * 8), 8});
+    if (!NaBatchRead(c.pid, class_items.data(),
+                     static_cast<uint32_t>(class_items.size()), class_buffer.data(),
+                     static_cast<uint32_t>(class_buffer.size()))) {
+      if (stats) ++stats->read_failures;
+      continue;
+    }
+    for (size_t i = 0; i < values.size(); ++i) {
+      uint64_t klass = 0;
+      std::memcpy(&klass, class_buffer.data() + i * sizeof(klass), sizeof(klass));
+      if (klass == expected_value_class) out.push_back(values[i]);
     }
   }
+  if (stats) stats->class_matches = out.size();
   return out;
 }
 struct BatchField { uint64_t address = 0; uint32_t size = 0; };
@@ -174,6 +252,9 @@ struct PlayerCacheEntry {
 };
 struct PlayerCache {
   std::vector<PlayerCacheEntry> entries;
+  uint32_t dictionary_count = 0, dictionary_capacity = 0;
+  size_t dictionary_active_values = 0, dictionary_read_failures = 0;
+  bool dictionary_header_valid = false;
   ULONGLONG last_roster_check = 0, last_record_refresh = 0, last_meta_refresh = 0;
 };
 // Read up to 64 independent fields per driver command, preserving one
@@ -194,24 +275,55 @@ static std::vector<uint64_t> batch_read_fields(uint32_t pid, const std::vector<B
   }
   return values;
 }
-// Positions for objects whose transform field sits at `tr_off` and whose
-// transform concrete type is CharacterTransformModel layout
-// (float X/Y/Z @ +0x10/+0x14/+0x18, verified in build dump).
-static void fill_positions(Ctx& c, const std::vector<uint64_t>& objs, uint32_t tr_off,
-                           std::vector<nzl::Vec3f>& pos_out) {
-  int n = (int)objs.size();
-  pos_out.assign(n, {});
-  std::vector<uint64_t> trs(n, 0);
-  for (int base = 0; base < n; base += 32) {
-    int m = (n - base) < 32 ? (n - base) : 32;
-    std::vector<NaItem> ti; std::vector<uint8_t> tb(m * 8, 0);
-    for (int i = 0; i < m; i++) ti.push_back(NaItem{objs[base + i] + tr_off, (uint32_t)(i * 8), 8});
-    if (NaBatchRead(c.pid, ti.data(), (uint32_t)ti.size(), tb.data(), m * 8))
-      for (int i = 0; i < m; i++) std::memcpy(&trs[base + i], tb.data() + i * 8, 8);
-    std::vector<NaItem> pi; std::vector<uint8_t> pb(m * 12, 0);
-    for (int i = 0; i < m; i++) if (trs[base + i]) pi.push_back(NaItem{trs[base + i] + 0x10, (uint32_t)(i * 12), 12});
-    if (!pi.empty() && NaBatchRead(c.pid, pi.data(), (uint32_t)pi.size(), pb.data(), m * 12))
-      for (int i = 0; i < m; i++) { float f[3]; std::memcpy(f, pb.data() + i * 12, 12); pos_out[base + i] = {f[0], f[1], f[2]}; }
+// Optional position reader. All field members come from the selected profile;
+// the current profile leaves loot XYZ unknown and keeps this path disabled.
+static void fill_positions(Ctx& c, const std::vector<uint64_t>& objs,
+                           uint32_t transform_offset, uint32_t x_offset,
+                           uint32_t y_offset, uint32_t z_offset,
+                           std::vector<nzl::Vec3f>& positions) {
+  const size_t count = objs.size();
+  positions.assign(count, {});
+  std::vector<uint64_t> transforms(count, 0);
+  for (size_t base = 0; base < count; base += 32) {
+    const uint32_t n = static_cast<uint32_t>(std::min<size_t>(32, count - base));
+    std::vector<NaItem> items;
+    std::vector<uint8_t> buffer(static_cast<size_t>(n) * 8, 0);
+    items.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint64_t object = objs[base + i];
+      const bool valid = nzl::plausible_ptr(object) &&
+                         object <= UINT64_MAX - transform_offset;
+      items.push_back(NaItem{valid ? object + transform_offset : 0,
+                             i * 8, valid ? 8u : 0u});
+    }
+    if (!NaBatchRead(c.pid, items.data(), n, buffer.data(),
+                     static_cast<uint32_t>(buffer.size()))) continue;
+    for (uint32_t i = 0; i < n; ++i)
+      std::memcpy(&transforms[base + i], buffer.data() + i * 8, 8);
+  }
+
+  for (size_t base = 0; base < count; base += 21) {
+    const uint32_t n = static_cast<uint32_t>(std::min<size_t>(21, count - base));
+    std::vector<NaItem> items;
+    std::vector<uint8_t> buffer(static_cast<size_t>(n) * 12, 0);
+    items.reserve(static_cast<size_t>(n) * 3);
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint64_t transform = transforms[base + i];
+      const uint32_t offsets[] = {x_offset, y_offset, z_offset};
+      for (uint32_t axis = 0; axis < 3; ++axis) {
+        const bool valid = nzl::plausible_ptr(transform) &&
+                           transform <= UINT64_MAX - offsets[axis];
+        items.push_back(NaItem{valid ? transform + offsets[axis] : 0,
+                               i * 12 + axis * 4, valid ? 4u : 0u});
+      }
+    }
+    if (!NaBatchRead(c.pid, items.data(), static_cast<uint32_t>(items.size()),
+                     buffer.data(), static_cast<uint32_t>(buffer.size()))) continue;
+    for (uint32_t i = 0; i < n; ++i) {
+      float xyz[3]{};
+      std::memcpy(xyz, buffer.data() + static_cast<size_t>(i) * 12, 12);
+      positions[base + i] = {xyz[0], xyz[1], xyz[2]};
+    }
   }
 }
 static bool same_roster(const PlayerCache& cache, const std::vector<uint64_t>& chars) {
@@ -220,78 +332,144 @@ static bool same_roster(const PlayerCache& cache, const std::vector<uint64_t>& c
   return true;
 }
 static bool refresh_player_records(Ctx& c, PlayerCache& cache) {
-  constexpr uint32_t kRecordSize = 0x200; // char+0x10 through role primitive at char+0x208
   const size_t n = cache.entries.size();
-  for (size_t base = 0; base < n; base += 64) {
-    uint32_t m = (uint32_t)std::min<size_t>(64, n - base);
-    std::vector<NaItem> items; items.reserve(m);
-    std::vector<uint8_t> buf((size_t)m * kRecordSize, 0);
-    for (uint32_t i = 0; i < m; ++i)
-      items.push_back(NaItem{cache.entries[base + i].character + 0x10, i * kRecordSize, kRecordSize});
-    if (!NaBatchRead(c.pid, items.data(), m, buf.data(), m * kRecordSize)) return false;
-    for (uint32_t i = 0; i < m; ++i) {
-      auto& e = cache.entries[base + i];
-      const uint8_t* raw = buf.data() + (size_t)i * kRecordSize;
-      std::memcpy(&e.private_model, raw, 8); // char+0x10
-      std::memcpy(&e.id, raw + c.off.char_id - 0x10, 4);
-      std::memcpy(&e.transform, raw + c.off.char_transform - 0x10, 8);
-      e.dead = raw[c.off.char_is_dead - 0x10] != 0;
-      std::memcpy(&e.armor_prim, raw + 0x1B8 - 0x10, 8);
-      std::memcpy(&e.role_prim, raw + 0x208 - 0x10, 8);
-      e.hp_value_addr = e.hp_max_addr = e.armor_value_addr = e.role_index_addr = 0;
-      e.hp = -1; e.maxhp = 0; e.armor = false; e.role = -2;
-    }
+  struct RecordIndices {
+    int id = -1, transform = -1, dead = -1;
+    int private_model = -1, armor_primitive = -1, role_primitive = -1;
+  };
+  std::vector<RecordIndices> indices(n);
+  std::vector<BatchField> fields;
+  auto add_pointer_field = [&](uint64_t base, uint32_t offset, uint32_t size,
+                               int& index) {
+    if (!nzl::plausible_ptr(base) || base > UINT64_MAX - offset) return;
+    index = static_cast<int>(fields.size());
+    fields.push_back({base + offset, size});
+  };
+  const bool read_private_model = c.off.hp_live_verified;
+  for (size_t i = 0; i < n; ++i) {
+    auto& e = cache.entries[i];
+    add_pointer_field(e.character, c.off.char_id, 4, indices[i].id);
+    add_pointer_field(e.character, c.off.char_transform, 8, indices[i].transform);
+    add_pointer_field(e.character, c.off.char_is_dead, 1, indices[i].dead);
+    if (read_private_model)
+      add_pointer_field(e.character, c.off.character_private_model, 8,
+                        indices[i].private_model);
+    if (c.off.armor_live_verified)
+      add_pointer_field(e.character, c.off.armor_primitive, 8,
+                        indices[i].armor_primitive);
+    if (c.off.role_live_verified)
+      add_pointer_field(e.character, c.off.role_primitive, 8,
+                        indices[i].role_primitive);
+    e.hp_value_addr = e.hp_max_addr = e.armor_value_addr = e.role_index_addr = 0;
+    e.hp = -1; e.maxhp = 0; e.armor = false; e.role = -2;
+  }
+  auto record_values = batch_read_fields(c.pid, fields);
+  auto field_value = [&](int index) -> uint64_t {
+    return index >= 0 && static_cast<size_t>(index) < record_values.size()
+               ? record_values[static_cast<size_t>(index)]
+               : 0;
+  };
+  for (size_t i = 0; i < n; ++i) {
+    auto& e = cache.entries[i];
+    e.id = static_cast<int32_t>(static_cast<uint32_t>(field_value(indices[i].id)));
+    e.transform = field_value(indices[i].transform);
+    e.dead = field_value(indices[i].dead) != 0;
+    e.private_model = field_value(indices[i].private_model);
+    e.armor_prim = field_value(indices[i].armor_primitive);
+    e.role_prim = field_value(indices[i].role_primitive);
   }
 
-  // Resolve the relatively stable HP/armor/role pointer chains during a
-  // roster refresh / periodic record refresh, not on every ESP frame.
-  std::vector<BatchField> fields;
+  // Optional nested chains are not read unless the profile explicitly marks
+  // that feature live-verified. The current 26866884 profile keeps these flags
+  // false, so player ESP only consumes the core ID/Transform/IsDead fields.
+  fields.clear();
   std::vector<int> hp_model_i(n, -1), armor_data_i(n, -1), role_data_i(n, -1);
   for (size_t i = 0; i < n; ++i) {
     const auto& e = cache.entries[i];
-    if (e.private_model) { hp_model_i[i] = (int)fields.size(); fields.push_back({e.private_model + 0x1B0, 8}); }
-    if (e.armor_prim) { armor_data_i[i] = (int)fields.size(); fields.push_back({e.armor_prim + 0x10, 8}); }
-    if (e.role_prim) { role_data_i[i] = (int)fields.size(); fields.push_back({e.role_prim + 0x10, 8}); }
+    if (c.off.hp_live_verified)
+      add_pointer_field(e.private_model, c.off.health_model, 8, hp_model_i[i]);
+    if (c.off.armor_live_verified)
+      add_pointer_field(e.armor_prim, c.off.primitive_data, 8, armor_data_i[i]);
+    if (c.off.role_live_verified)
+      add_pointer_field(e.role_prim, c.off.primitive_data, 8, role_data_i[i]);
   }
-  auto v1 = batch_read_fields(c.pid, fields);
+  const auto first_chain_values = batch_read_fields(c.pid, fields);
+  auto first_value = [&](int index) -> uint64_t {
+    return index >= 0 && static_cast<size_t>(index) < first_chain_values.size()
+               ? first_chain_values[static_cast<size_t>(index)]
+               : 0;
+  };
   std::vector<uint64_t> hp_model(n), armor_data(n), role_data(n);
   for (size_t i = 0; i < n; ++i) {
-    if (hp_model_i[i] >= 0) hp_model[i] = v1[hp_model_i[i]];
-    if (armor_data_i[i] >= 0) armor_data[i] = v1[armor_data_i[i]];
-    if (role_data_i[i] >= 0) role_data[i] = v1[role_data_i[i]];
+    hp_model[i] = first_value(hp_model_i[i]);
+    armor_data[i] = first_value(armor_data_i[i]);
+    role_data[i] = first_value(role_data_i[i]);
   }
+
   fields.clear();
   std::vector<int> hp_data_i(n, -1), role_desc_i(n, -1);
   for (size_t i = 0; i < n; ++i) {
-    if (hp_model[i]) {
-      hp_data_i[i] = (int)fields.size(); fields.push_back({hp_model[i] + 0x10, 8});
-      cache.entries[i].hp_max_addr = hp_model[i] + 0x20;
+    if (c.off.hp_live_verified && nzl::plausible_ptr(hp_model[i])) {
+      add_pointer_field(hp_model[i], c.off.health_data, 8, hp_data_i[i]);
+      if (hp_model[i] <= UINT64_MAX - c.off.health_max_value)
+        cache.entries[i].hp_max_addr = hp_model[i] + c.off.health_max_value;
     }
-    if (armor_data[i]) cache.entries[i].armor_value_addr = armor_data[i] + 0x18;
-    if (role_data[i]) { role_desc_i[i] = (int)fields.size(); fields.push_back({role_data[i] + 0x18, 8}); }
+    if (c.off.armor_live_verified && nzl::plausible_ptr(armor_data[i]) &&
+        armor_data[i] <= UINT64_MAX - c.off.primitive_value)
+      cache.entries[i].armor_value_addr = armor_data[i] + c.off.primitive_value;
+    if (c.off.role_live_verified)
+      add_pointer_field(role_data[i], c.off.role_description, 8, role_desc_i[i]);
   }
-  auto v2 = batch_read_fields(c.pid, fields);
+  const auto second_chain_values = batch_read_fields(c.pid, fields);
+  auto second_value = [&](int index) -> uint64_t {
+    return index >= 0 && static_cast<size_t>(index) < second_chain_values.size()
+               ? second_chain_values[static_cast<size_t>(index)]
+               : 0;
+  };
   for (size_t i = 0; i < n; ++i) {
-    if (hp_data_i[i] >= 0 && v2[hp_data_i[i]]) cache.entries[i].hp_value_addr = v2[hp_data_i[i]] + 0x18;
-    if (role_desc_i[i] >= 0 && v2[role_desc_i[i]]) cache.entries[i].role_index_addr = v2[role_desc_i[i]] + 0x18;
+    const uint64_t health_data = second_value(hp_data_i[i]);
+    const uint64_t role_description = second_value(role_desc_i[i]);
+    if (c.off.hp_live_verified && nzl::plausible_ptr(health_data) &&
+        health_data <= UINT64_MAX - c.off.health_value)
+      cache.entries[i].hp_value_addr = health_data + c.off.health_value;
+    if (c.off.role_live_verified && nzl::plausible_ptr(role_description) &&
+        role_description <= UINT64_MAX - c.off.role_index)
+      cache.entries[i].role_index_addr = role_description + c.off.role_index;
   }
   return true;
 }
 static void refresh_player_positions(Ctx& c, PlayerCache& cache) {
-  const size_t n = cache.entries.size();
-  for (size_t base = 0; base < n; base += 64) {
-    uint32_t m = (uint32_t)std::min<size_t>(64, n - base);
-    std::vector<NaItem> items; items.reserve(m);
-    std::vector<uint8_t> buf((size_t)m * 12, 0);
-    for (uint32_t i = 0; i < m; ++i) {
-      const auto& e = cache.entries[base + i];
-      items.push_back(NaItem{e.transform ? e.transform + 0x10 : 0, i * 12, e.transform ? 12u : 0u});
+  const size_t count = cache.entries.size();
+  const bool xyz_contiguous = c.off.ctm_x <= UINT32_MAX - 8 &&
+                              c.off.ctm_y == c.off.ctm_x + 4 &&
+                              c.off.ctm_z == c.off.ctm_x + 8;
+  const size_t chunk_size = xyz_contiguous ? 64 : 21;
+  for (size_t base = 0; base < count; base += chunk_size) {
+    const uint32_t n = static_cast<uint32_t>(
+        std::min<size_t>(chunk_size, count - base));
+    std::vector<NaItem> items;
+    std::vector<uint8_t> buffer(static_cast<size_t>(n) * 12, 0);
+    items.reserve(xyz_contiguous ? n : static_cast<size_t>(n) * 3);
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint64_t transform = cache.entries[base + i].transform;
+      const uint32_t offsets[] = {c.off.ctm_x, c.off.ctm_y, c.off.ctm_z};
+      const uint32_t axes = xyz_contiguous ? 1 : 3;
+      for (uint32_t axis = 0; axis < axes; ++axis) {
+        const uint32_t field_offset = xyz_contiguous ? c.off.ctm_x : offsets[axis];
+        const uint32_t bytes = xyz_contiguous ? 12 : 4;
+        const bool valid = nzl::plausible_ptr(transform) &&
+                           transform <= UINT64_MAX - field_offset;
+        items.push_back(NaItem{valid ? transform + field_offset : 0,
+                               i * 12 + (xyz_contiguous ? 0 : axis * 4),
+                               valid ? bytes : 0u});
+      }
     }
-    if (!NaBatchRead(c.pid, items.data(), m, buf.data(), m * 12)) continue;
-    for (uint32_t i = 0; i < m; ++i) {
-      auto& e = cache.entries[base + i];
-      float p[3]{}; std::memcpy(p, buf.data() + (size_t)i * 12, 12);
-      e.pos = {p[0], p[1], p[2]};
+    if (!NaBatchRead(c.pid, items.data(), static_cast<uint32_t>(items.size()),
+                     buffer.data(), static_cast<uint32_t>(buffer.size()))) continue;
+    for (uint32_t i = 0; i < n; ++i) {
+      float xyz[3]{};
+      std::memcpy(xyz, buffer.data() + static_cast<size_t>(i) * 12, 12);
+      cache.entries[base + i].pos = {xyz[0], xyz[1], xyz[2]};
     }
   }
 }
@@ -301,11 +479,22 @@ static void refresh_player_metadata(Ctx& c, PlayerCache& cache) {
   std::vector<Indices> ix(cache.entries.size());
   for (size_t i = 0; i < cache.entries.size(); ++i) {
     auto& e = cache.entries[i];
-    if (c.show_hp && e.hp_value_addr) { ix[i].hp = (int)fields.size(); fields.push_back({e.hp_value_addr, 4}); }
-    if (c.show_hp && e.hp_max_addr) { ix[i].maxhp = (int)fields.size(); fields.push_back({e.hp_max_addr, 4}); }
-    if (c.show_armor && e.armor_value_addr) { ix[i].armor = (int)fields.size(); fields.push_back({e.armor_value_addr, 1}); }
-    if (c.show_roles && e.role_index_addr) { ix[i].role = (int)fields.size(); fields.push_back({e.role_index_addr, 4}); }
-    ix[i].dead = (int)fields.size(); fields.push_back({e.character + c.off.char_is_dead, 1});
+    if (c.show_hp && c.off.hp_live_verified && e.hp_value_addr) {
+      ix[i].hp = static_cast<int>(fields.size()); fields.push_back({e.hp_value_addr, 4});
+    }
+    if (c.show_hp && c.off.hp_live_verified && e.hp_max_addr) {
+      ix[i].maxhp = static_cast<int>(fields.size()); fields.push_back({e.hp_max_addr, 4});
+    }
+    if (c.show_armor && c.off.armor_live_verified && e.armor_value_addr) {
+      ix[i].armor = static_cast<int>(fields.size()); fields.push_back({e.armor_value_addr, 1});
+    }
+    if (c.show_roles && c.off.role_live_verified && e.role_index_addr) {
+      ix[i].role = static_cast<int>(fields.size()); fields.push_back({e.role_index_addr, 4});
+    }
+    if (e.character <= UINT64_MAX - c.off.char_is_dead) {
+      ix[i].dead = static_cast<int>(fields.size());
+      fields.push_back({e.character + c.off.char_is_dead, 1});
+    }
   }
   auto values = batch_read_fields(c.pid, fields);
   for (size_t i = 0; i < cache.entries.size(); ++i) {
@@ -316,13 +505,20 @@ static void refresh_player_metadata(Ctx& c, PlayerCache& cache) {
     else e.maxhp = 0;
     e.armor = x.armor >= 0 && values[x.armor] != 0;
     e.role = (x.role >= 0 && values[x.role] <= 4) ? (int32_t)values[x.role] : -2;
-    e.dead = values[x.dead] != 0;
+    e.dead = x.dead >= 0 && static_cast<size_t>(x.dead) < values.size() &&
+             values[static_cast<size_t>(x.dead)] != 0;
   }
 }
 static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& local,
                                                       PlayerCache& cache, ULONGLONG now) {
   if (!cache.last_roster_check || now - cache.last_roster_check >= 1000) {
-    auto chars = dict_values(c, c.chain.dict);
+    DictionaryStats stats;
+    auto chars = dict_values(c, c.chain.dict, c.player_class, &stats);
+    cache.dictionary_header_valid = stats.header_valid;
+    cache.dictionary_count = stats.count;
+    cache.dictionary_capacity = stats.capacity;
+    cache.dictionary_active_values = stats.active_values;
+    cache.dictionary_read_failures = stats.read_failures;
     bool changed = !same_roster(cache, chars);
     if (changed) {
       cache.entries.clear(); cache.entries.reserve(chars.size());
@@ -356,44 +552,91 @@ static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& l
 }
 static std::vector<LootEnt> snapshot_loot(Ctx& c, const nzl::Vec3f& local) {
   std::vector<LootEnt> out;
-  auto dict = c.mem->ptr(c.chain.world_entities + 0x38); // _loots (dump-verified)
-  if (!dict) return out;
-  auto objs = dict_values(c, *dict);
-  std::vector<nzl::Vec3f> pos; fill_positions(c, objs, 0x20 /*LootModel.Transform*/, pos);
-  for (size_t i = 0; i < objs.size(); i++) {
-    nzl::Vec3f p = pos[i];
-    if ((p.x == 0 && p.y == 0 && p.z == 0) || !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
-    float dx = p.x - local.x, dy = p.y - local.y, dz = p.z - local.z;
-    LootEnt e; e.pos = p; e.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-    out.push_back(e);
+  if (!c.off.loot_live_verified || !c.off.loot_positions_configured ||
+      !c.mem || !c.off.loot_dictionary || !c.off.loot_transform ||
+      c.chain.world_entities > UINT64_MAX - c.off.loot_dictionary)
+    return out;
+  auto dict = c.mem->ptr(c.chain.world_entities + c.off.loot_dictionary);
+  if (!dict || !nzl::plausible_ptr(*dict)) return out;
+  const auto objects = dict_values(c, *dict);
+  std::vector<nzl::Vec3f> positions;
+  fill_positions(c, objects, c.off.loot_transform, c.off.loot_position_x,
+                 c.off.loot_position_y, c.off.loot_position_z, positions);
+  for (const auto& position : positions) {
+    if ((position.x == 0 && position.y == 0 && position.z == 0) ||
+        !std::isfinite(position.x) || !std::isfinite(position.y) ||
+        !std::isfinite(position.z)) continue;
+    const float dx = position.x - local.x;
+    const float dy = position.y - local.y;
+    const float dz = position.z - local.z;
+    LootEnt entity;
+    entity.pos = position;
+    entity.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    out.push_back(entity);
   }
   return out;
 }
 static std::vector<CarEnt> snapshot_cars(Ctx& c, const nzl::Vec3f& local) {
   std::vector<CarEnt> out;
-  auto dict = c.mem->ptr(c.chain.world_entities + 0x60); // _cars (dump-verified)
-  if (!dict) return out;
-  auto objs = dict_values(c, *dict);
-  int n = (int)objs.size();
-  std::vector<uint64_t> trs(n, 0);
-  std::vector<nzl::Vec3f> pos(n, nzl::Vec3f{});
-  for (int base = 0; base < n; base += 32) {
-    int m = (n - base) < 32 ? (n - base) : 32;
-    std::vector<NaItem> ti; std::vector<uint8_t> tb(m * 8, 0);
-    for (int i = 0; i < m; i++) ti.push_back(NaItem{objs[base + i] + 0xC0, (uint32_t)(i * 8), 8}); // CarModel.Transform
-    if (NaBatchRead(c.pid, ti.data(), (uint32_t)ti.size(), tb.data(), m * 8))
-      for (int i = 0; i < m; i++) std::memcpy(&trs[base + i], tb.data() + i * 8, 8);
-    std::vector<NaItem> pi; std::vector<uint8_t> pb(m * 12, 0);
-    for (int i = 0; i < m; i++) if (trs[base + i]) pi.push_back(NaItem{trs[base + i] + 0x38, (uint32_t)(i * 12), 12}); // _centerOfMassPosition
-    if (!pi.empty() && NaBatchRead(c.pid, pi.data(), (uint32_t)pi.size(), pb.data(), m * 12))
-      for (int i = 0; i < m; i++) { float f[3]; std::memcpy(f, pb.data() + i * 12, 12); pos[base + i] = {f[0], f[1], f[2]}; }
+  if (!c.off.cars_live_verified || !c.mem || !c.off.cars_dictionary ||
+      !c.off.car_transform || c.chain.world_entities > UINT64_MAX - c.off.cars_dictionary)
+    return out;
+  auto dict = c.mem->ptr(c.chain.world_entities + c.off.cars_dictionary);
+  if (!dict || !nzl::plausible_ptr(*dict)) return out;
+  const auto objects = dict_values(c, *dict);
+  const size_t count = objects.size();
+  std::vector<uint64_t> transforms(count, 0);
+  std::vector<nzl::Vec3f> positions(count, nzl::Vec3f{});
+  for (size_t base = 0; base < count; base += 32) {
+    const uint32_t n = static_cast<uint32_t>(std::min<size_t>(32, count - base));
+    std::vector<NaItem> transform_items;
+    std::vector<uint8_t> transform_buffer(static_cast<size_t>(n) * 8, 0);
+    transform_items.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint64_t object = objects[base + i];
+      const bool valid = nzl::plausible_ptr(object) &&
+                         object <= UINT64_MAX - c.off.car_transform;
+      transform_items.push_back(NaItem{valid ? object + c.off.car_transform : 0,
+                                       i * 8, valid ? 8u : 0u});
+    }
+    if (!NaBatchRead(c.pid, transform_items.data(), n, transform_buffer.data(),
+                     static_cast<uint32_t>(transform_buffer.size()))) continue;
+    for (uint32_t i = 0; i < n; ++i)
+      std::memcpy(&transforms[base + i], transform_buffer.data() + i * 8, 8);
+
+    std::vector<NaItem> position_items;
+    std::vector<uint8_t> position_buffer(static_cast<size_t>(n) * 12, 0);
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint64_t transform = transforms[base + i];
+      const bool valid = nzl::plausible_ptr(transform) &&
+                         transform <= UINT64_MAX - c.off.car_position;
+      if (valid)
+        position_items.push_back(NaItem{transform + c.off.car_position,
+                                        i * 12, 12});
+    }
+    if (!position_items.empty() &&
+        NaBatchRead(c.pid, position_items.data(),
+                    static_cast<uint32_t>(position_items.size()), position_buffer.data(),
+                    static_cast<uint32_t>(position_buffer.size()))) {
+      for (uint32_t i = 0; i < n; ++i) {
+        if (!nzl::plausible_ptr(transforms[base + i])) continue;
+        float xyz[3]{};
+        std::memcpy(xyz, position_buffer.data() + static_cast<size_t>(i) * 12, 12);
+        positions[base + i] = {xyz[0], xyz[1], xyz[2]};
+      }
+    }
   }
-  for (int i = 0; i < n; i++) {
-    nzl::Vec3f p = pos[i];
-    if ((p.x == 0 && p.y == 0 && p.z == 0) || !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
-    float dx = p.x - local.x, dy = p.y - local.y, dz = p.z - local.z;
-    CarEnt e; e.pos = p; e.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-    out.push_back(e);
+  for (const auto& position : positions) {
+    if ((position.x == 0 && position.y == 0 && position.z == 0) ||
+        !std::isfinite(position.x) || !std::isfinite(position.y) ||
+        !std::isfinite(position.z)) continue;
+    const float dx = position.x - local.x;
+    const float dy = position.y - local.y;
+    const float dz = position.z - local.z;
+    CarEnt entity;
+    entity.pos = position;
+    entity.dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    out.push_back(entity);
   }
   return out;
 }
@@ -728,6 +971,17 @@ static bool set_menu_visible(bool visible) {
 static LRESULT CALLBACK overlay_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_ERASEBKGND) return 1;
   if (msg == WM_PAINT) {
+    static ULONGLONG paint_window_start = 0;
+    static uint32_t paint_frames = 0;
+    ULONGLONG paint_now = GetTickCount64();
+    if (!paint_window_start) paint_window_start = paint_now;
+    ++paint_frames;
+    ULONGLONG paint_elapsed = paint_now - paint_window_start;
+    if (paint_elapsed >= 1000) {
+      uint64_t milli_fps = (uint64_t)paint_frames * 1000000ULL / paint_elapsed;
+      g_overlay_paint_millifps.store((uint32_t)milli_fps, std::memory_order_relaxed);
+      paint_frames = 0; paint_window_start = paint_now;
+    }
     PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
     RECT rc{}; GetClientRect(h, &rc);
     HBRUSH black = CreateSolidBrush(RGB(0, 0, 0)); FillRect(dc, &rc, black); DeleteObject(black);
@@ -944,65 +1198,93 @@ static void set_runtime(Ctx* ui, DWORD pid, bool ready, const std::string& statu
   if (overlay) InvalidateRect(overlay, nullptr, FALSE);
   if (menu) InvalidateRect(menu, nullptr, FALSE);
 }
-static bool read_classes(nzl::DriverMemory& mem, uint64_t ga, uint64_t klass[6], const char*& failed) {
-  struct Slot { const char* name; uint64_t rva; };
-  static const Slot slots[] = {
-    {"Game", 0x81B7710ULL}, {"GameModel", 0x81B86D8ULL}, {"BattleModel", 0x82496E8ULL},
-    {"BattleEntitiesModel", 0x8245928ULL}, {"WorldEntitiesModel", 0x82295C8ULL}, {"BattleCameraModel", 0x823C210ULL}
-  };
-  for (int i = 0; i < 6; ++i) {
-    auto k = mem.ptr(ga + slots[i].rva);
-    klass[i] = k ? *k : 0;
-    if (!klass[i] || !klass_name_is(mem, klass[i], slots[i].name)) { failed = slots[i].name; return false; }
+static bool read_classes(nzl::DriverMemory& mem, uint64_t ga,
+                         const nzl::Offsets& off,
+                         const nzl::game_profile::GameProfile& profile,
+                         uint64_t klass[7], const char*& failed) {
+  for (size_t i = 0; i < profile.type_info.size(); ++i) {
+    const auto& slot = profile.type_info[i];
+    if (!slot.rva.present() || slot.rva.value > UINT64_MAX - ga) {
+      failed = slot.class_name.data();
+      return false;
+    }
+    auto class_ptr = mem.ptr(ga + slot.rva.value);
+    klass[i] = class_ptr ? *class_ptr : 0;
+    if (!klass[i] || !klass_name_is(mem, klass[i], off.il2cpp_class_name,
+                                    slot.class_name.data())) {
+      failed = slot.class_name.data();
+      return false;
+    }
   }
-  failed = nullptr; return true;
+  failed = nullptr;
+  return true;
 }
-static uint64_t find_live_game(nzl::DriverMemory& mem, DWORD pid, const uint64_t klass[6], const nzl::Offsets& off, Ctx* ui) {
-  auto obj_klass = [&](uint64_t o) -> uint64_t { auto k = o ? mem.ptr(o) : std::nullopt; return k ? *k : 0; };
-  uint64_t start = 0x10000, cands[256];
+static bool chain_classes_match(const nzl::IMemory& mem,
+                                const nzl::ChainResult& chain,
+                                const uint64_t klass[7]) {
+  if (!chain.ok) return false;
+  const uint64_t objects[] = {chain.game, chain.game_model, chain.battle_model,
+                              chain.battle_entities, chain.world_entities,
+                              chain.camera_model};
+  for (size_t i = 0; i < std::size(objects); ++i) {
+    auto object_class = mem.ptr(objects[i]);
+    if (!object_class || *object_class != klass[i]) return false;
+  }
+  return true;
+}
+static uint64_t find_live_game(nzl::DriverMemory& mem, DWORD pid,
+                               const uint64_t klass[7], const nzl::Offsets& off,
+                               Ctx* ui) {
+  uint64_t start = 0x10000, candidates[256];
   while (start && !g_stop.load()) {
     uint64_t next = 0;
-    uint32_t found = NaScan(pid, klass[0], start, cands, 256, &next);
+    const uint32_t found = NaScan(pid, klass[0], start, candidates, 256, &next);
     for (uint32_t i = 0; i < found && !g_stop.load(); ++i) {
-      uint64_t cand = cands[i];
-      auto gm = mem.ptr(cand + off.game_model);
-      if (!gm || obj_klass(*gm) != klass[1]) {
-        gm = mem.ptr(cand + off.game_model_alt);
-        if (!gm || obj_klass(*gm) != klass[1]) continue;
-      }
-      auto bm = mem.ptr(*gm + off.game_battle);
-      if (!bm || obj_klass(*bm) != klass[2]) continue;
-      auto be = mem.ptr(*bm + off.battle_entities);
-      if (!be || obj_klass(*be) != klass[3]) continue;
-      return cand;
+      const auto candidate = nzl::resolve_chain_from_game(mem, candidates[i], off);
+      if (!chain_classes_match(mem, candidate, klass)) continue;
+      const auto roster = nzl::read_dict(mem, candidate.dict, off);
+      if (!roster || roster->count <= 0) continue;
+      return candidates[i];
     }
-    char status[128]; std::snprintf(status, sizeof(status), "Waiting for battle object... scan 0x%llX", (unsigned long long)next);
+    char status[128];
+    std::snprintf(status, sizeof(status), "Waiting for validated battle object... scan 0x%llX",
+                  (unsigned long long)next);
     set_runtime(ui, pid, false, status, false);
     if (!next) break;
+    if (next <= start) {
+      set_runtime(ui, pid, false, "Profile-gated heap scan stopped: cursor did not advance", false);
+      break;
+    }
     start = next;
   }
   return 0;
 }
 static void esp_worker(Ctx* ui) {
+  constexpr const auto& profile = nzl::game_profile::kOwnerProfile26866884;
   DWORD active_pid = 0;
   std::unique_ptr<nzl::DriverMemory> mem;
   bool mem_ready = false;
-  uint64_t ga = 0, klass[6] = {}, game_obj = 0;
+  bool profile_identity_checked = false;
+  bool profile_identity_ok = false;
+  uint64_t ga = 0, klass[7] = {}, game_obj = 0;
   const char* failed_class = nullptr;
-  nzl::Offsets off;
+  nzl::Offsets off(profile);
   nzl::ChainResult chain;
   PlayerCache player_cache;
   while (!g_stop.load()) {
     DWORD pid = find_pid(L"ROB RUN.exe");
     if (!pid) {
       if (mem) { mem->close(); mem.reset(); }
-      active_pid = 0; mem_ready = false; ga = 0; game_obj = 0; chain = {}; player_cache = {};
+      active_pid = 0; mem_ready = false; profile_identity_checked = false;
+      profile_identity_ok = false; ga = 0; game_obj = 0; chain = {}; player_cache = {};
+      std::fill(std::begin(klass), std::end(klass), 0);
       set_runtime(ui, 0, false, "Waiting for ROB RUN process", true);
       Sleep(500); continue;
     }
     if (pid != active_pid) {
       if (mem) { mem->close(); mem.reset(); }
-      active_pid = pid; mem_ready = false; ga = 0; game_obj = 0; chain = {}; player_cache = {};
+      active_pid = pid; mem_ready = false; profile_identity_checked = false;
+      profile_identity_ok = false; ga = 0; game_obj = 0; chain = {}; player_cache = {};
       std::fill(std::begin(klass), std::end(klass), 0);
       mem = std::make_unique<nzl::DriverMemory>(pid);
       set_runtime(ui, pid, false, "ROB RUN found - connecting to driver", true);
@@ -1022,28 +1304,68 @@ static void esp_worker(Ctx* ui) {
         Sleep(1000); continue;
       }
     }
-    if (!read_classes(*mem, ga, klass, failed_class)) {
-      std::string s = "Waiting for game initialization: "; s += failed_class ? failed_class : "class";
-      set_runtime(ui, pid, false, s, true);
+    if (!off.profile_configured) {
+      set_runtime(ui, pid, false, "Build profile is incomplete; offsets blocked", true);
+      Sleep(2000); continue;
+    }
+    if (!profile_identity_checked) {
+      profile_identity_checked = true;
+      const auto file_check = nzl::windows_profile::verify_gameassembly_file(pid, profile);
+      if (!file_check.matched()) {
+        std::string status = "Build profile blocked: ";
+        status += nzl::windows_profile::status_name(file_check.status);
+        status += " size=" + std::to_string(file_check.actual_size) + "/" +
+                  std::to_string(profile.fingerprint.gameassembly_file_size);
+        if (!file_check.actual_sha256.empty())
+          status += " sha256=" + file_check.actual_sha256;
+        set_runtime(ui, pid, false, status, true);
+        Sleep(2000); continue;
+      }
+      const auto remote_read = [&](uint64_t address, void* output, size_t size) {
+        return mem->read(address, output, size);
+      };
+      uint32_t image_size = 0;
+      if (!nzl::windows_profile::read_loaded_pe_size_of_image(ga, remote_read, image_size) ||
+          !nzl::game_profile::type_info_rvas_fit_image(profile, image_size)) {
+        char status[192];
+        std::snprintf(status, sizeof(status),
+                      "Build profile blocked: PE/RVA bounds failed (SizeOfImage=0x%X)",
+                      image_size);
+        set_runtime(ui, pid, false, status, true);
+        Sleep(2000); continue;
+      }
+      profile_identity_ok = true;
+      std::string status = "Profile ";
+      status += profile.fingerprint.steam_build_id;
+      status += " fingerprint OK; validating TypeInfo classes";
+      set_runtime(ui, pid, false, status, true);
+    }
+    if (!profile_identity_ok) { Sleep(2000); continue; }
+    if (!read_classes(*mem, ga, off, profile, klass, failed_class)) {
+      std::string status = "Profile class check failed: ";
+      status += failed_class ? failed_class : "unknown";
+      set_runtime(ui, pid, false, status, true);
       Sleep(1000); continue;
     }
     if (!game_obj) {
-      set_runtime(ui, pid, false, "Game loaded - waiting for an active match", true);
+      set_runtime(ui, pid, false, "Profile classes OK - waiting for an active match", true);
       game_obj = find_live_game(*mem, pid, klass, off, ui);
       if (!game_obj) {
         if (find_pid(L"ROB RUN.exe") != active_pid) continue;
-        set_runtime(ui, pid, false, "Waiting for match; menu stays available", true);
+        set_runtime(ui, pid, false, "Waiting for a class-validated match chain", true);
         Sleep(2500); continue;
       }
     }
     chain = nzl::resolve_chain_from_game(*mem, game_obj, off);
-      if (!chain.ok) {
-        game_obj = 0; player_cache = {};
-        set_runtime(ui, pid, false, "Match is loading - waiting for battle chain", true);
-        Sleep(1000); continue;
-      }
-    Ctx work; work.pid = pid; work.mem = mem.get(); work.off = off; work.chain = chain;
-    set_runtime(ui, pid, true, "ESP connected - syncing players", false);
+    if (!chain.ok || !chain_classes_match(*mem, chain, klass) ||
+        !nzl::read_dict(*mem, chain.dict, off)) {
+      game_obj = 0; player_cache = {};
+      set_runtime(ui, pid, false, "Build-profile chain/dictionary check failed; reconnecting", true);
+      Sleep(1000); continue;
+    }
+    Ctx work; work.pid = pid; work.mem = mem.get(); work.off = off;
+    work.chain = chain; work.player_class = klass[6];
+    set_runtime(ui, pid, true, "ESP connected - syncing validated players", false);
     ULONGLONG last_chain_check = 0, last_pid_check = 0;
     ULONGLONG last_car_refresh = 0, last_loot_refresh = 0;
     ULONGLONG perf_window_start = GetTickCount64();
@@ -1065,7 +1387,10 @@ static void esp_worker(Ctx* ui) {
       if (now - last_chain_check > 1500) {
         last_chain_check = now;
         nzl::ChainResult fresh = nzl::resolve_chain_from_game(*mem, game_obj, off);
-        if (!fresh.ok) {
+        const auto fresh_roster = fresh.ok ? nzl::read_dict(*mem, fresh.dict, off)
+                                          : std::optional<nzl::DictHeader>{};
+        if (!fresh.ok || !chain_classes_match(*mem, fresh, klass) ||
+            !fresh_roster || fresh_roster->count <= 0) {
           game_obj = 0; chain = {}; player_cache = {}; leave_match = true;
           set_runtime(ui, pid, false, "Match changed - waiting to reconnect", true);
           break;
@@ -1082,7 +1407,7 @@ static void esp_worker(Ctx* ui) {
       // quaternion is unavailable or the user selects that basis.
       NaItem camera_items[] = {
         {chain.camera_model + off.cam_pos, 0, 12},
-        {chain.camera_model + 0x2C, 12, 16},
+        {chain.camera_model + off.cam_look_at_orientation, 12, 16},
         {chain.camera_model + off.cam_fwd, 28, 12},
         {chain.camera_model + off.cam_right, 40, 12},
         {chain.camera_model + off.cam_up, 52, 12},
@@ -1111,17 +1436,20 @@ static void esp_worker(Ctx* ui) {
       view.pos = cpos; view.fwd = cfwd; view.right = cright; view.up = cup;
       view.width = std::max(work.width, 1); view.height = std::max(work.height, 1); view.fov_deg = work.fov;
       work.render.clear();
-      const float bone_height[] = {1.75f, 1.30f, 0.95f};
+      size_t culled_dead = 0, culled_distance = 0, culled_view = 0, culled_edge = 0;
+      const float bone_height[] = {work.off.aim_head_height_m,
+                                   work.off.aim_chest_height_m,
+                                   work.off.aim_pelvis_height_m};
       int bone = std::clamp(work.aim_bone, 0, 2);
       for (auto& p : players) {
-        if (p.dead && !work.show_dead) continue;
-        if (p.dist > work.max_dist) continue;
+        if (p.dead && !work.show_dead) { ++culled_dead; continue; }
+        if (p.dist > work.max_dist) { ++culled_distance; continue; }
         float fx, fy, fd, hx, hy, hd, ax, ay, ad;
-        nzl::Vec3f head{p.pos.x, p.pos.y + 1.8f, p.pos.z};
+        nzl::Vec3f head{p.pos.x, p.pos.y + work.off.head_height_m, p.pos.z};
         nzl::Vec3f aim_point{p.pos.x, p.pos.y + bone_height[bone], p.pos.z};
         if (!nzl::world_to_screen(view, p.pos, fx, fy, fd) || !nzl::world_to_screen(view, head, hx, hy, hd) ||
-            !nzl::world_to_screen(view, aim_point, ax, ay, ad)) continue;
-        if (work.visible_only && (hx < 0 || hx > view.width || hy < 0 || hy > view.height)) continue;
+            !nzl::world_to_screen(view, aim_point, ax, ay, ad)) { ++culled_view; continue; }
+        if (work.visible_only && (hx < 0 || hx > view.width || hy < 0 || hy > view.height)) { ++culled_edge; continue; }
         RenderEnt e; e.hx = hx; e.hy = hy; e.fx = fx; e.fy = fy; e.ax = ax; e.ay = ay;
         e.pos = p.pos; e.id = p.id; e.dist = p.dist; e.dead = p.dead;
         e.hp = p.hp; e.maxhp = p.maxhp; e.armor = p.armor; e.role = p.role;
@@ -1179,13 +1507,29 @@ static void esp_worker(Ctx* ui) {
         perf_frames = 0;
         perf_window_start = sample_time;
       }
-      char status[160];
-      if (measured_fps > 0.0)
-        std::snprintf(status, sizeof(status), "ESP %.1f updates/s  |  work %llums  |  players %zu / %zu",
-                      measured_fps, (unsigned long long)last_work_ms, players.size(), work.render.size());
+      double paint_fps = (double)g_overlay_paint_millifps.load(std::memory_order_relaxed) / 1000.0;
+      char dictionary_status[80]{};
+      if (player_cache.dictionary_header_valid)
+        std::snprintf(dictionary_status, sizeof(dictionary_status),
+                      "dict %u/%u active %zu",
+                      player_cache.dictionary_count, player_cache.dictionary_capacity,
+                      player_cache.dictionary_active_values);
       else
-        std::snprintf(status, sizeof(status), "ESP measuring update rate...  |  players %zu / %zu",
-                      players.size(), work.render.size());
+        std::snprintf(dictionary_status, sizeof(dictionary_status), "dict INVALID");
+      char status[320];
+      if (measured_fps > 0.0)
+        std::snprintf(status, sizeof(status),
+                      "ESP data %.1f/s paint %.1f/s work %llums | %s roster %zu pos %zu draw %zu | dead %zu far %zu proj %zu edge %zu rd-fail %zu",
+                      measured_fps, paint_fps, (unsigned long long)last_work_ms,
+                      dictionary_status, player_cache.entries.size(), players.size(),
+                      work.render.size(), culled_dead, culled_distance, culled_view,
+                      culled_edge, player_cache.dictionary_read_failures);
+      else
+        std::snprintf(status, sizeof(status),
+                      "ESP measuring | paint %.1f/s | %s roster %zu pos %zu draw %zu | dead %zu far %zu proj %zu edge %zu rd-fail %zu",
+                      paint_fps, dictionary_status, player_cache.entries.size(),
+                      players.size(), work.render.size(), culled_dead, culled_distance,
+                      culled_view, culled_edge, player_cache.dictionary_read_failures);
       {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         ui->render = work.render; ui->loot = work.loot; ui->cars = work.cars;
