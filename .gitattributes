@@ -1,0 +1,2 @@
+# cmd.exe parses .bat by byte offset: LF-only files break labels and goto.
+*.bat text eol=crlf

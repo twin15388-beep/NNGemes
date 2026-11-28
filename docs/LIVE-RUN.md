@@ -17,17 +17,30 @@ sc_drv.c(280): warning C4996 ExAllocatePoolWithTag   # осознанно, не 
 
 ## 1. Порядок
 
-Всё из `D:\NZL Rob run`, PowerShell **от администратора**.
+PowerShell **от администратора**. Свежее админское окно стартует в
+`C:\Windows\system32`, поэтому пути должны быть абсолютными. Есть
+диспетчер, которому текущая папка безразлична:
 
-1. `powershell -ExecutionPolicy Bypass -File tools\NZL-SetKernelDump.ps1`
+```
+"D:\NZL Rob run\NZL.bat" build
+"D:\NZL Rob run\NZL.bat" load
+"D:\NZL Rob run\NZL.bat" probe
+"D:\NZL Rob run\NZL.bat" overlay
+"D:\NZL Rob run\NZL.bat" report
+```
+
+`report` без аргументов сам добавляет `-Zip -CopyToDropbox`.
+Эквивалент вручную, тоже из любой папки:
+
+1. `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\NZL Rob run\tools\NZL-SetKernelDump.ps1"`
    → если пишет `Kernel dump уже настроен` — ничего не делать; если меняет
    настройки — `Restart-Computer` и начать заново.
-2. `powershell -ExecutionPolicy Bypass -File tools\NZL-LoadDriver.ps1`
+2. `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\NZL Rob run\tools\NZL-LoadDriver.ps1"`
    Скрипт сам откажется работать, если `CrashDumpEnabled != 2` (exit 9).
 3. Запустить игру через Steam, дойти до **матча** (не меню).
-4. `powershell -ExecutionPolicy Bypass -File tools\NZL-Probe.ps1`
-5. `powershell -ExecutionPolicy Bypass -File tools\NZL-Overlay.ps1`
-6. `powershell -ExecutionPolicy Bypass -File tools\NZL-Report.ps1 -Zip -CopyToDropbox`
+4. `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\NZL Rob run\tools\NZL-Probe.ps1"`
+5. `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\NZL Rob run\tools\NZL-Overlay.ps1"`
+6. `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\NZL Rob run\tools\NZL-Report.ps1" -Zip -CopyToDropbox`
 
 Оверлей: INSERT — меню, END — выход. Режим экрана в игре должен быть
 **Windowed / Borderless**: layered-окно не рисуется поверх exclusive
