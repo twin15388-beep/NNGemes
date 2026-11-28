@@ -28,9 +28,23 @@ HKEY_LOCAL_MACHINE\SYSTEM\NaCoreFilter
 
 ---
 
+## Wire protocol
+
+`sc.h` (kernel side) and `sc_client.h` (user side) no longer define the
+protocol themselves: both include `nzl/include/nzl/na_wire.h`, which holds
+`NA_SHM`, the `NA_CMD_*` ids, the transfer limits and the compile-time layout
+asserts. Any build of either side therefore needs the repo include path:
+
+- `build_driver.bat` adds `/I"%~dp0..\..\include"` for you;
+- CMake targets get it from `target_link_libraries(... nzl_core)`.
+
+If the asserts fail, the two binaries disagree on the shared layout — fix the
+struct, never the assert.
+
 ## Adding to Your Project
 
 Drop `sc_client.h` and `sc_client.cpp` into your project and include the header.
+Also add `nzl/include` to the include path (see above).
 
 ---
 

@@ -1,55 +1,18 @@
 #pragma once
 #include <windows.h>
 
-#define NA_CMD_READ   1
-#define NA_CMD_WRITE  2
-#define NA_CMD_BASE   3
-#define NA_CMD_PEB    4
-#define NA_CMD_REGION 5
-#define NA_CMD_BATCH  6
-#define NA_CMD_ALLOC  7
-#define NA_CMD_MODULE 8
-#define NA_CMD_SCAN   9
+/* Wire protocol is defined once, in nzl/include/nzl/na_wire.h, and shared
+ * with the kernel driver (nzl/driver/sc.h). The layout asserts inside that
+ * header are compiled by BOTH sides, so a client/driver drift cannot ship
+ * silently: it is a build error instead of a wild VA in MmCopyVirtualMemory. */
+#include "nzl/na_wire.h"
 
-#define NA_MAX_XFER  0x10000
-#define NA_BATCH_MAX 64
-
-#pragma pack(push, 1)
-
-struct NaItem {
-    UINT64 address;
-    UINT32 offset;
-    UINT32 size;
-};
-
-struct NaRegion {
-    UINT64 base;
-    UINT64 size;
-    UINT32 state;
-    UINT32 protect;
-    UINT32 type;
-    UINT32 pad;
-};
-
-struct NaShm {
-    volatile LONG seq;
-    volatile LONG seq_out;
-    UINT32        key;
-    UINT32        cmd;
-    UINT32        pid;
-    UINT32        size;
-    UINT64        address;
-    UINT32        protect;
-    UINT32        count;
-    UINT32        total;
-    LONG          status;
-    UINT32        pad;
-    NaRegion      region;
-    NaItem        items[NA_BATCH_MAX];
-    UINT8         data[NA_MAX_XFER];
-};
-
-#pragma pack(pop)
+/* C++ aliases so call sites keep the historical names. NA_SHM is packed to
+ * 1 on both sides, and NA_I32 is `long` on Windows, so `volatile LONG*`
+ * (InterlockedIncrement) type-checks against volatile NA_I32 members. */
+typedef NA_SHM    NaShm;
+typedef NA_ITEM   NaItem;
+typedef NA_REGION NaRegion;
 
 // init / shutdown
 bool    NaInit();
@@ -95,4 +58,6 @@ bool NaWrite(UINT32 pid, UINT64 addr, T val) {
     return NaWrite(pid, addr, sizeof(T), &val);
 }
 // Module base by name via driver PEB walk (NA_CMD_MODULE).
+// Implemented in NaModuleByPid() in nzl/driver/sc_drv.c over
+// nzl/include/nzl/na_pebwalk.h; returns 0 when the module is not loaded.
 UINT64 NaGetModule(UINT32 pid, const wchar_t* name);

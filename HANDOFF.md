@@ -856,3 +856,103 @@
   the source update is synchronized to Windows. No runtime validation. Keep
   stop active: do not launch either BAT, ROB RUN, or the driver. Live skeleton
   layout, hierarchy, and world-space conversion remain unverified.
+
+## Wire-протокол: один заголовок, две стороны, host-тест (2026-11-28)
+
+### Запрос
+Явного задания в сообщении снова не было (только системный блок). Принят
+следующий verifiable шаг из предыдущего раздела HANDOFF: kernel-driver copy
+path после BSOD #1-#4. Работа выполнена в этой же ветке
+`arena/bdc72b1f-nngemes` (база `443bd9b`, «Harden driver copy paths after
+BSOD analysis»). Драйвер не загружался, BAT не запускался, игра не
+запускалась — stop из предыдущих сессий не снимался.
+
+### Найдено в коде (факты, не предположения)
+1. `NA_SHM` был определён дважды, руками: `nzl/driver/sc.h` (WDK-типы) и
+   `nzl/client/sc_client.h` (Win32-типы). Смещения совпадали, но ничто их не
+   проверяло — расхождение сдвигает все последующие поля и даёт драйверу VA
+   клиента из чужого слота (класс BSOD #4: source VA `fffffede9deede7f`).
+2. `NA_CMD_SCAN`: при заполнении `maxcand` в середине чанка `*next_out`
+   выставлялся в начало чанка (`cur`). Следующий вызов сканировал тот же
+   чанк, снова отдавал те же кандидаты и тот же resume-VA → клиентский
+   `while (next)` крутился вечно. Воспроизведено тестом (10 совпадений,
+   `maxcand=1`), после правки 11 вызовов вместо бесконечности.
+3. `NA_CMD_MODULE` объявлен в `sc.h` и `sc_client.h`, вызывается из
+   `NaGetModule()` — и отсутствовал в `switch` воркера. Все вызовы
+   возвращали `STATUS_INVALID_DEVICE_REQUEST` → 0. Мёртвый API, выглядевший
+   рабочим.
+4. `g_active` выставлялся в 1 ПОСЛЕ `PsCreateSystemThread`; воркер стартует
+   с `while (InterlockedAdd(&g_active, 0))` и мог увидеть 0, выйти и
+   оставить драйвер без обработчика команд.
+5. `DriverUnload` нигде не назначался → `NaUnload()` был недостижим
+   (актуально для service-загрузки; kdmapper его не вызывает).
+6. `NaPeb` отдавал PEB без проверки диапазона, `NaAlloc` не ограничивал
+   размер (оба входа — из shared section).
+
+### Сделано
+- `nzl/include/nzl/na_wire.h` — единственное определение протокола,
+  fixed-width типы без платформенных заголовков, `NA_SHM_OFF_*`,
+  `NA_STATIC_ASSERT` на `sizeof`/смещения (0x34/0x54/0x454/0x10454),
+  компилируется и C-драйвером, и C++-клиентом.
+- `nzl/include/nzl/na_validate.h` — `na_user_range`, `na_span_within`,
+  `na_batch_header_ok`, `na_batch_item_ok`, `na_scan_maxcand`,
+  `na_scan_chunk_bytes`, `na_scan_advance`, `na_scan_should_stop`,
+  `na_scan_region_ok`.
+- `nzl/include/nzl/na_scan.h` — весь цикл скана как state machine поверх
+  двух колбэков; resume-VA = первый непросмотренный qword, строгий прогресс,
+  битовый бюджет, guard на число region-запросов.
+- `nzl/include/nzl/na_pebwalk.h` — walk `PEB+0x18 -> +0x10` по
+  `BaseDllName` с ограничением записей, проверкой user range и
+  case-insensitive сравнением.
+- `nzl/driver/sc.h` — только `#include` wire-заголовка.
+- `nzl/client/sc_client.h` — wire-заголовок + `typedef NA_SHM NaShm` и т.д.
+- `nzl/driver/sc_drv.c` — `NaScan` переписан на адаптеры к `na_scan_run`,
+  добавлен `NaModuleByPid` (PEB walk через `MmCopyVirtualMemory`), фикс
+  гонки `g_active`, `DriverUnload = NaUnload`, отказ от unmap при таймауте
+  воркера, проверки в `NaPeb`/`NaAlloc`, batch-валидация через общие
+  предикаты.
+- `nzl/client/sc_client.cpp` — `NaScan` не даёт клиенту крутиться на
+  не-прогрессирующем resume-VA.
+- `nzl/tests/test_protocol.cpp` — host-тест: layout, fuzz `na_user_range`
+  (200k), fuzz batch (100k), классификатор регионов, полнота скана против
+  brute-force, регрессия ливлока, unreadable-страницы, byte budget,
+  вырожденные аргументы, PEB walk на синтетическом PEB (включая
+  самозамкнутый список).
+- `nzl/driver/hostcheck/{ntddk.h,ntifs.h}` + `nzl/driver/check_driver.sh` —
+  syntax-гейт `sc_drv.c` без Windows.
+- `nzl/client/hostcheck/{windows.h,mmsystem.h}` + `nzl/client/check_client.sh`
+  — syntax-гейт `sc_client.cpp` без Windows.
+- `nzl/driver/build_driver.bat` — добавлен `/I"%~dp0..\..\include"`.
+- `nzl/CMakeLists.txt` — таргет `nzl_protocol_tests` (подхватывается
+  существующим `ctest` в `NZL-BuildAll.ps1`).
+- `README.md` — раздел про протокол и текущие проверки.
+
+### Сборка и прогоны (эта сессия, exit codes)
+- `g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -I nzl/include nzl/tests/test_protocol.cpp ...` → exit 0
+- `/tmp/nzlb/build/t_protocol` → exit 0, `300272 checks, 0 failures`
+- ASan+UBSan сборка того же теста → exit 0, 0 failures
+- `sh nzl/driver/check_driver.sh` (`gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only`) → exit 0, `DRIVER_SYNTAX_OK`
+- `sh nzl/client/check_client.sh` (`g++ -std=c++20 -fsyntax-only`) → exit 0, `CLIENT_SYNTAX_OK`
+- Существующие наборы: `t_chain`, `t_pipeline`, `t_profile`, `t_skeleton` — compile exit 0, каждый прогон exit 0.
+- CMake в этой песочнице отсутствует (проверено: `which cmake` пуст), поэтому
+  конфигурация/сборка через CMake здесь не выполнялась; таргеты проверены
+  прямыми командами g++ с теми же флагами, что в `nzl/CMakeLists.txt`.
+
+### Не проверено
+- `driver.sys` в этой сессии не собирался: WDK/MSVC здесь нет, shim-заголовки —
+  только syntax-гейт, не ABI. Настоящая сборка — `build_driver.bat` на Windows.
+- `nzl_overlay.exe`/`nzl_studio.exe`/`nzl_probe.exe` не компилировались: нужны
+  D3D11/DXGI/ImGui/dwmapi. Изменения в `sc_client.h` проверены syntax-гейтом
+  клиентского TU, но не полной Windows-сборкой.
+- Живой PEB: смещения `PEB+0x18` / `LDR+0x10` / `LDR_DATA_TABLE_ENTRY`
+  (`0x30/0x40/0x58`) — документированная x64-раскладка, а не измерение на
+  текущем билде игры. Подтверждение — `nzl_probe.exe` на Windows (PE offset +
+  MZ в найденном модуле).
+- В игре не проверено ничего. Драйвер не загружался, BAT не запускался.
+
+### Следующий verifiable шаг
+1. На Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-BuildAll.ps1`
+   — требуется exit 0 и `nzl_protocol_tests` в выводе CTest (5 наборов вместо 4).
+   Только после этого `NZL-Package.ps1`. Пакет не запускать.
+2. После снятия stop по BSOD: `nzl_probe.exe` — подтвердить PEB/LDR и
+   `NaGetModule(L"GameAssembly.dll")` против PSAPI-значения того же процесса.

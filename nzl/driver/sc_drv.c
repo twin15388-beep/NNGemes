@@ -1,5 +1,11 @@
 #include <ntifs.h>
 #include "sc.h"
+/* Portable, host-tested pieces: address validation, batch checks, the scan
+ * state machine and the PEB module walk. Same code runs in
+ * nzl/tests/test_protocol.cpp against synthetic memory. */
+#include "nzl/na_validate.h"
+#include "nzl/na_scan.h"
+#include "nzl/na_pebwalk.h"
 
 #define POOL_TAG 'aNcs'
 
@@ -69,17 +75,12 @@ NTSYSAPI NTSTATUS NTAPI MmCopyVirtualMemory(PEPROCESS SourceProcess, PVOID Sourc
 // addresses - it raw-memcpys and bugchecks. Every address that arrives
 // via the shared section is untrusted: reject anything outside the
 // user range (and any end-overflow) BEFORE MmCopy ever sees it.
-#define NA_USER_LIMIT 0x0000800000000000ULL
-static BOOLEAN NaUserRange(ULONGLONG addr, ULONGLONG sz)
-{
-    if (addr >= NA_USER_LIMIT) return FALSE;
-    if (sz > NA_USER_LIMIT - addr) return FALSE;
-    return TRUE;
-}
+// The predicate itself now lives in nzl/include/nzl/na_validate.h so the
+// host test suite fuzzes the exact code the kernel runs.
 
 static NTSTATUS NaRead(ULONG pid, ULONGLONG addr, ULONG sz, PVOID out)
 {
-    if (!NaUserRange(addr, sz)) return STATUS_INVALID_PARAMETER;
+    if (!na_user_range(addr, (NA_U64)sz)) return STATUS_INVALID_PARAMETER;
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
@@ -92,7 +93,7 @@ static NTSTATUS NaRead(ULONG pid, ULONGLONG addr, ULONG sz, PVOID out)
 
 static NTSTATUS NaWrite(ULONG pid, ULONGLONG addr, ULONG sz, PVOID in)
 {
-    if (!NaUserRange(addr, sz)) return STATUS_INVALID_PARAMETER;
+    if (!na_user_range(addr, (NA_U64)sz)) return STATUS_INVALID_PARAMETER;
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
@@ -110,8 +111,8 @@ static NTSTATUS NaBase(ULONG pid, PULONGLONG out)
     if (!NT_SUCCESS(st)) return st;
     PUCHAR peb = (PUCHAR)PsGetProcessPeb(proc);
     ULONGLONG val = 0;
-    if (peb && NaUserRange((ULONGLONG)(ULONG_PTR)peb,
-                           0x10 + sizeof(val))) {
+    if (peb && na_user_range((NA_U64)(ULONG_PTR)peb,
+                             0x10 + sizeof(val))) {
         SIZE_T copied = 0;
         st = MmCopyVirtualMemory(proc, peb + 0x10, PsGetCurrentProcess(),
                                  &val, sizeof(val), KernelMode, &copied);
@@ -127,14 +128,21 @@ static NTSTATUS NaPeb(ULONG pid, PULONGLONG out)
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
-    *out = (ULONGLONG)(ULONG_PTR)PsGetProcessPeb(proc);
+    {
+        PUCHAR peb = (PUCHAR)PsGetProcessPeb(proc);
+        if (!peb || !na_user_range((NA_U64)(ULONG_PTR)peb, 0x1000)) {
+            ObDereferenceObject(proc);
+            return STATUS_INVALID_PARAMETER;
+        }
+        *out = (ULONGLONG)(ULONG_PTR)peb;
+    }
     ObDereferenceObject(proc);
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS NaRegion(ULONG pid, ULONGLONG addr, PNA_REGION out)
 {
-    if (!NaUserRange(addr, 1)) return STATUS_INVALID_PARAMETER;
+    if (!na_user_range(addr, 1)) return STATUS_INVALID_PARAMETER;
     PEPROCESS proc;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
@@ -168,6 +176,10 @@ static NTSTATUS NaRegion(ULONG pid, ULONGLONG addr, PNA_REGION out)
 static NTSTATUS NaAlloc(ULONG pid, ULONGLONG sz, ULONG prot, PULONGLONG out)
 {
     PEPROCESS proc;
+    // Bounded: the size arrives from the shared section, and an unbounded
+    // ZwAllocateVirtualMemory in someone else's address space is a resource
+    // exhaustion primitive at best and a typo'd address at worst.
+    if (!sz || sz > 0x40000000ULL) return STATUS_INVALID_PARAMETER;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) return st;
     KAPC_STATE apc;
@@ -184,91 +196,165 @@ static NTSTATUS NaAlloc(ULONG pid, ULONGLONG sz, ULONG prot, PULONGLONG out)
     return st;
 }
 
-// NA_CMD_SCAN: kernel-side qword pattern scan over the target's
-// committed MEM_PRIVATE readable regions. Replaces ~22k client round
-// trips (64KB each, ~16ms poll tick each = 6 minutes for 1.4GB) with a
-// handful of commands. Per call scans at most NA_SCAN_MAX_BYTES so the
-// worker never wedges the protocol; shm->address returns the resume VA
-// (0 = address space exhausted), shm->count returns candidate count,
-// candidates are ULONGLONGs written into shm->data. Input: shm->address
-// = start VA, shm->count = max candidates (<=256), pattern qword in
-// shm->data[0..8). All target addresses pass NaUserRange; copies go
-// through MmCopyVirtualMemory into a pool buffer (never a raw deref,
-// never a System-process pointer while attached - BSOD #1-#4 rules).
-#define NA_SCAN_MAX_BYTES (128ULL * 1024 * 1024)
-#define NA_SCAN_CHUNK 0x10000
+// NA_CMD_SCAN: kernel-side qword pattern scan over the target's committed
+// MEM_PRIVATE readable regions. Replaces ~22k client round trips (64KB each,
+// ~16ms poll tick each = 6 minutes for 1.4GB) with a handful of commands.
+// The walk itself is the portable na_scan_run() state machine
+// (nzl/include/nzl/na_scan.h) so the driver and the host test run identical
+// logic; this file only supplies the two adapters.
+//   region: KeStackAttachProcess + ZwQueryVirtualMemory, result written to a
+//           kernel-stack local, detached BEFORE anything else touches it
+//           (BSOD #1-#3 rule: never dereference a System-only VA while the
+//           target address space is current).
+//   read:   MmCopyVirtualMemory into the pool scratch buffer, never a raw
+//           deref, always behind na_user_range().
+// Output: shm->address = resume VA (0 = exhausted), shm->count = candidates,
+// candidates are ULONGLONGs in shm->data. Input: shm->address = start,
+// shm->count = max candidates, pattern qword in shm->data[0..8).
+// Per-call copy budget keeps one command well under the client's 2000 ms
+// Send() timeout; the resume VA carries the rest across calls.
+#define NA_SCAN_MAX_BYTES NA_SCAN_MAX_BYTES_DEFAULT
+#define NA_SCAN_CHUNK NA_SCAN_CHUNK_DEFAULT
+
+typedef struct _NA_SCAN_CTX {
+    PEPROCESS proc;
+} NA_SCAN_CTX, *PNA_SCAN_CTX;
+
+static int NaScanRegionCB(void* ctx, NA_U64 va, NA_REGION* out)
+{
+    PNA_SCAN_CTX c = (PNA_SCAN_CTX)ctx;
+    KAPC_STATE apc;
+    MEMORY_BASIC_INFORMATION mbi;
+    SIZE_T ret = 0;
+    NTSTATUS st;
+
+    RtlZeroMemory(&mbi, sizeof(mbi));
+    KeStackAttachProcess(c->proc, &apc);
+    st = ZwQueryVirtualMemory(ZwCurrentProcess(), (PVOID)(ULONG_PTR)va,
+                              MemoryBasicInformation, &mbi, sizeof(mbi), &ret);
+    KeUnstackDetachProcess(&apc);
+    if (!NT_SUCCESS(st)) return 0;
+
+    out->base    = (NA_U64)(ULONG_PTR)mbi.BaseAddress;
+    out->size    = (NA_U64)mbi.RegionSize;
+    out->state   = (NA_U32)mbi.State;
+    out->protect = (NA_U32)mbi.Protect;
+    out->type    = (NA_U32)mbi.Type;
+    out->pad     = 0;
+    return 1;
+}
+
+static int NaScanReadCB(void* ctx, NA_U64 va, void* out, NA_U32 size, NA_U32* copied)
+{
+    PNA_SCAN_CTX c = (PNA_SCAN_CTX)ctx;
+    SIZE_T got = 0;
+    NTSTATUS st;
+    *copied = 0;
+    if (!na_user_range(va, (NA_U64)size)) return 0;
+    st = MmCopyVirtualMemory(c->proc, (PVOID)(ULONG_PTR)va, PsGetCurrentProcess(),
+                             out, (SIZE_T)size, KernelMode, &got);
+    if (!NT_SUCCESS(st) || !got) return 0;
+    *copied = (NA_U32)got;
+    return 1;
+}
+
 static NTSTATUS NaScan(PNA_SHM shm, PULONGLONG next_out, PULONG found_out)
 {
-    ULONGLONG pattern = 0;
+    NA_SCAN_CTX ctx;
+    NA_SCAN_IO io;
+    PVOID buf;
+    NA_U32 found = 0;
+    NA_U64 nxt = 0;
+    NA_U64 pattern = 0;
+    NA_U32 maxcand;
+    NTSTATUS st;
+    int ok;
+
     RtlCopyMemory(&pattern, shm->data, sizeof(pattern));
-    ULONG maxcand = shm->count;
-    if (!maxcand || maxcand > 256) maxcand = 256;
-    ULONGLONG addr = shm->address;
-    if (!NaUserRange(addr, 8)) return STATUS_INVALID_PARAMETER;
-    PEPROCESS proc;
-    NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)shm->pid, &proc);
+    maxcand = na_scan_maxcand(shm->count);
+    if (!na_user_range(shm->address, 8)) return STATUS_INVALID_PARAMETER;
+
+    st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)shm->pid, &ctx.proc);
     if (!NT_SUCCESS(st)) return st;
-    PUCHAR buf = (PUCHAR)ExAllocatePoolWithTag(NonPagedPool, NA_SCAN_CHUNK, POOL_TAG);
-    if (!buf) { ObDereferenceObject(proc); return STATUS_INSUFFICIENT_RESOURCES; }
-    ULONG found = 0;
-    ULONGLONG scanned = 0;
-    NTSTATUS out_st = STATUS_SUCCESS;
-    while (addr < NA_USER_LIMIT && found < maxcand && scanned < NA_SCAN_MAX_BYTES) {
-        // Region info into a STACK local while attached; used after detach.
-        MEMORY_BASIC_INFORMATION mbi;
-        RtlZeroMemory(&mbi, sizeof(mbi));
-        KAPC_STATE apc;
-        KeStackAttachProcess(proc, &apc);
-        SIZE_T ret = 0;
-        NTSTATUS qst = ZwQueryVirtualMemory(ZwCurrentProcess(), (PVOID)(ULONG_PTR)addr,
-                                            MemoryBasicInformation, &mbi, sizeof(mbi), &ret);
-        KeUnstackDetachProcess(&apc);
-        if (!NT_SUCCESS(qst)) { out_st = qst; addr = 0; break; }
-        ULONGLONG rbase = (ULONGLONG)(ULONG_PTR)mbi.BaseAddress;
-        ULONGLONG rsize = (ULONGLONG)mbi.RegionSize;
-        ULONGLONG rend = rbase + rsize;
-        if (rend <= addr || rsize == 0) { out_st = STATUS_INVALID_PARAMETER; addr = 0; break; }
-        ULONG prot = mbi.Protect & 0xFF;
-        BOOLEAN readable = (prot == PAGE_READONLY || prot == PAGE_READWRITE ||
-                            prot == PAGE_EXECUTE_READ || prot == PAGE_EXECUTE_READWRITE ||
-                            prot == PAGE_EXECUTE_WRITECOPY || prot == PAGE_WRITECOPY);
-        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && readable &&
-            !(mbi.Protect & PAGE_GUARD)) {
-            ULONGLONG cur = addr > rbase ? addr : rbase;
-            for (; cur + 8 <= rend && found < maxcand && scanned < NA_SCAN_MAX_BYTES; cur += NA_SCAN_CHUNK) {
-                ULONG want = (ULONG)((rend - cur) < NA_SCAN_CHUNK ? (rend - cur) : NA_SCAN_CHUNK);
-                if (!NaUserRange(cur, want)) break;
-                SIZE_T copied = 0;
-                NTSTATUS cst = MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)cur,
-                                                   PsGetCurrentProcess(), buf, want,
-                                                   KernelMode, &copied);
-                scanned += want;
-                if (!NT_SUCCESS(cst) || copied < 8) continue;
-                for (ULONGLONG o = 0; o + 8 <= copied && found < maxcand; o += 8) {
-                    ULONGLONG v = 0;
-                    RtlCopyMemory(&v, buf + o, 8);
-                    if (v == pattern) {
-                        ULONGLONG cand = cur + o;
-                        RtlCopyMemory(shm->data + (ULONGLONG)found * 8, &cand, 8);
-                        found++;
-                    }
-                }
-            }
-            if (cur < rend && (found >= maxcand || scanned >= NA_SCAN_MAX_BYTES)) {
-                *next_out = cur;
-                *found_out = found;
-                ExFreePoolWithTag(buf, POOL_TAG);
-                ObDereferenceObject(proc);
-                return STATUS_SUCCESS;
-            }
-        }
-        addr = rend;
-    }
-    *next_out = (addr >= NA_USER_LIMIT) ? 0 : addr;
-    *found_out = found;
+
+    buf = ExAllocatePoolWithTag(NonPagedPool, NA_SCAN_CHUNK, POOL_TAG);
+    if (!buf) { ObDereferenceObject(ctx.proc); return STATUS_INSUFFICIENT_RESOURCES; }
+
+    io.region = NaScanRegionCB;
+    io.read = NaScanReadCB;
+    io.ctx = &ctx;
+    io.buf = buf;
+    io.chunk = NA_SCAN_CHUNK;
+    io.max_bytes = NA_SCAN_MAX_BYTES;
+
+    ok = na_scan_run(&io, shm->address, pattern, maxcand,
+                     (NA_U64*)shm->data, &found, &nxt);
+
     ExFreePoolWithTag(buf, POOL_TAG);
+    ObDereferenceObject(ctx.proc);
+
+    if (!ok) return STATUS_INVALID_PARAMETER;
+    *next_out = (ULONGLONG)nxt;
+    *found_out = (ULONG)found;
+    return STATUS_SUCCESS;
+}
+
+// NA_CMD_MODULE: base of a module by BaseDllName in the target PEB.
+// Previously declared on both sides and implemented on NEITHER (no case in
+// the worker switch), so NaGetModule() always returned 0 while looking like
+// a working API. Input: UTF-16 name in shm->data (NUL-padded, max 63 chars).
+// Output: 8-byte base in shm->data.
+static int NaPebReadFullCB(void* ctx, NA_U64 va, void* out, NA_U32 size)
+{
+    PNA_SCAN_CTX c = (PNA_SCAN_CTX)ctx;
+    SIZE_T got = 0;
+    NTSTATUS st;
+
+    if (!na_user_range(va, (NA_U64)size)) return 0;
+    st = MmCopyVirtualMemory(c->proc, (PVOID)(ULONG_PTR)va, PsGetCurrentProcess(),
+                             out, (SIZE_T)size, KernelMode, &got);
+    if (!NT_SUCCESS(st)) return 0;
+    return got == (SIZE_T)size;
+}
+
+static NTSTATUS NaModuleByPid(ULONG pid, PNA_SHM shm)
+{
+    NA_SCAN_CTX ctx;
+    NA_MODULE_INFO info;
+    unsigned short name[NA_PEBWALK_MAX_NAME_BYTES / 2];
+    ULONG chars = 0;
+    PUCHAR peb;
+    NTSTATUS st;
+    PEPROCESS proc;
+
+    st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
+    if (!NT_SUCCESS(st)) return st;
+    peb = (PUCHAR)PsGetProcessPeb(proc);
+    if (!peb || !na_user_range((NA_U64)(ULONG_PTR)peb, 0x20)) {
+        ObDereferenceObject(proc);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    RtlCopyMemory(name, shm->data, sizeof(name));
+    name[(sizeof(name) / sizeof(name[0])) - 1] = 0;
+    while (chars < (sizeof(name) / sizeof(name[0])) && name[chars]) chars++;
+    if (!chars) {
+        ObDereferenceObject(proc);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    RtlZeroMemory(&info, sizeof(info));
+    ctx.proc = proc;
+    // The PEB walk reads target memory through MmCopyVirtualMemory only.
+    if (!na_peb_find_module(NaPebReadFullCB, &ctx, (NA_U64)(ULONG_PTR)peb,
+                            name, chars, &info)) {
+        ObDereferenceObject(proc);
+        return STATUS_NOT_FOUND;
+    }
     ObDereferenceObject(proc);
-    return out_st;
+    if (!info.base || !na_user_range(info.base, 0x1000)) return STATUS_NOT_FOUND;
+    *(ULONGLONG*)shm->data = (ULONGLONG)info.base;
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS NaBatch(PNA_SHM shm)
@@ -278,19 +364,16 @@ static NTSTATUS NaBatch(PNA_SHM shm)
     ULONG count = shm->count;
     ULONG total = shm->total;
     ULONG pid = shm->pid;
-    if (!count || count > NA_BATCH_MAX || !total || total > NA_MAX_XFER)
-        return STATUS_INVALID_PARAMETER;
     NA_ITEM items[NA_BATCH_MAX];
+    if (!na_batch_header_ok((NA_U32)count, (NA_U32)total))
+        return STATUS_INVALID_PARAMETER;
     RtlCopyMemory(items, shm->items, count * sizeof(NA_ITEM));
 
     // Validate the whole batch before making any process-memory copies.
     // With PreviousMode=KernelMode, MmCopyVirtualMemory does not probe an
     // invalid kernel-range source VA; reject malformed user-writable spans.
     for (ULONG i = 0; i < count; i++) {
-        const NA_ITEM* it = &items[i];
-        if (!it->size || (ULONGLONG)it->offset > total ||
-            (ULONGLONG)it->size > (ULONGLONG)total - it->offset ||
-            !NaUserRange(it->address, it->size))
+        if (!na_batch_item_ok(&items[i], (NA_U32)total))
             return STATUS_INVALID_PARAMETER;
     }
 
@@ -374,6 +457,9 @@ static VOID NaWorker(PVOID ctx)
                 if (NT_SUCCESS(shm->status)) *(ULONGLONG*)shm->data = val;
                 break;
             }
+            case NA_CMD_MODULE:
+                shm->status = NaModuleByPid(shm->pid, shm);
+                break;
             default:
                 shm->status = STATUS_INVALID_DEVICE_REQUEST;
                 break;
@@ -393,13 +479,21 @@ static VOID NaToHex8(ULONG v, WCHAR* out)
         out[i] = h[v & 0xF];
 }
 
-static VOID NaUnload(void)
+static VOID NaUnload(PDRIVER_OBJECT drv)
 {
+    UNREFERENCED_PARAMETER(drv);
     InterlockedExchange(&g_active, 0);
     if (g_worker_thread) {
         LARGE_INTEGER to;
+        NTSTATUS wst;
         to.QuadPart = -10000LL * 2000;
-        ZwWaitForSingleObject(g_worker_thread, FALSE, &to);
+        wst = ZwWaitForSingleObject(g_worker_thread, FALSE, &to);
+        if (!NT_SUCCESS(wst)) {
+            // Worker still alive inside the shared view: unmapping now would
+            // free memory under a running thread (instant bugcheck). Leak the
+            // view and the thread; the section dies with the process.
+            return;
+        }
         ZwClose(g_worker_thread);
         g_worker_thread = NULL;
     }
@@ -479,12 +573,19 @@ static VOID NaStartup(PVOID ctx)
         ZwClose(hKey);
     }
 
+    // g_active must be live BEFORE the worker exists: the worker loop is
+    // `while (InterlockedAdd(&g_active, 0))`, so a thread that wins the race
+    // would see 0, fall through and terminate itself - a driver that loads,
+    // publishes the registry key and silently never answers a command.
+    InterlockedExchange(&g_active, 1);
+
     InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
     st = PsCreateSystemThread(&g_worker_thread, THREAD_ALL_ACCESS, &oa,
                               NULL, NULL, NaWorker, NULL);
-    if (!NT_SUCCESS(st)) goto done;
-
-    InterlockedExchange(&g_active, 1);
+    if (!NT_SUCCESS(st)) {
+        InterlockedExchange(&g_active, 0);
+        goto done;
+    }
 
 done:
     PsTerminateSystemThread(STATUS_SUCCESS);
@@ -492,8 +593,10 @@ done:
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
 {
-    UNREFERENCED_PARAMETER(drv);
     UNREFERENCED_PARAMETER(reg);
+    // kdmapper manual-maps and never calls this, but a service/sc.exe load
+    // does, and NaUnload() used to be unreachable dead code.
+    drv->DriverUnload = NaUnload;
     OBJECT_ATTRIBUTES oa;
     InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
     HANDLE hThread;

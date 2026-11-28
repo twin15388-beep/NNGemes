@@ -22,6 +22,18 @@ add_test(NAME nzl_profile_tests COMMAND nzl_profile_tests)
 add_executable(nzl_skeleton_tests tests/test_skeleton.cpp)
 target_link_libraries(nzl_skeleton_tests PRIVATE nzl_core)
 add_test(NAME nzl_skeleton_tests COMMAND nzl_skeleton_tests)
+
+# Driver wire protocol: layout ABI, address validation, batch checks, the
+# kernel scan state machine and the PEB module walk. Host-side only; the
+# same headers are compiled into driver.sys by MSVC+WDK.
+add_executable(nzl_protocol_tests tests/test_protocol.cpp)
+target_include_directories(nzl_protocol_tests PRIVATE include)
+if(MSVC)
+  target_compile_options(nzl_protocol_tests PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(nzl_protocol_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME nzl_protocol_tests COMMAND nzl_protocol_tests)
 if(WIN32)
   add_executable(nzl_probe src/probe_windows.cpp client/sc_client.cpp)
   target_include_directories(nzl_probe PRIVATE client)

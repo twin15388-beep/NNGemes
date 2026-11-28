@@ -36,7 +36,10 @@
 - [`cpp/`](cpp/) — небольшое независимое C++20 math/ESP ядро и host-тесты.
 - [`nzl/src/overlay_windows.cpp`](nzl/src/overlay_windows.cpp) — persistent UI, worker подключения, player/loot/car snapshots, проекция, ESP/aim.
 - [`nzl/src/chain.cpp`](nzl/src/chain.cpp), [`nzl/src/esp_pipeline.cpp`](nzl/src/esp_pipeline.cpp), [`nzl/include/nzl/`](nzl/include/nzl/) — цепочки игры, reader abstraction, проекция и общая ESP-логика.
-- [`nzl/client/`](nzl/client/), [`nzl/driver/`](nzl/driver/) — shared-memory клиент (`NaInit`, `NaBatchRead`, `NaScan`), kernel driver и `build_driver.bat` (MSVC + WDK).
+- [`nzl/client/`](nzl/client/), [`nzl/driver/`](nzl/driver/) — shared-memory клиент (`NaInit`, `NaBatchRead`, `NaScan`, `NaGetModule`), kernel driver и `build_driver.bat` (MSVC + WDK).
+- [`nzl/include/nzl/na_wire.h`](nzl/include/nzl/na_wire.h) — единственное определение wire-протокола (`NA_SHM`, команды, лимиты) + compile-time assert раскладки. Включается и драйвером, и клиентом.
+- [`nzl/include/nzl/na_validate.h`](nzl/include/nzl/na_validate.h), [`na_scan.h`](nzl/include/nzl/na_scan.h), [`na_pebwalk.h`](nzl/include/nzl/na_pebwalk.h) — переносимые проверки адресов, state machine kernel-скана и walk по PEB; компилируются и в ядро, и в host-тест.
+- [`nzl/tests/test_protocol.cpp`](nzl/tests/test_protocol.cpp) — 300k+ host-проверок протокола; [`nzl/driver/check_driver.sh`](nzl/driver/check_driver.sh) и [`nzl/client/check_client.sh`](nzl/client/check_client.sh) — syntax-гейты для двух половин протокола без Windows.
 - [`tools/NZL-BuildAll.ps1`](tools/NZL-BuildAll.ps1) — Windows build driver и NZL executables.
 - [`tools/NZL-LoadDriver.ps1`](tools/NZL-LoadDriver.ps1) — первичная загрузка или безопасное переиспользование транспорта.
 - [`tools/NZL-Package.ps1`](tools/NZL-Package.ps1) — генератор одного `NZL-Studio.bat` со встроенными `driver.sys`, `kdmapper.exe`, `nzl_overlay.exe`.
@@ -134,12 +137,28 @@ CULLED dead/far/proj/edge 0/0/23/0 | RD-FAIL 0 | CAM-FAIL 0/0/0 | FOV 90 VIEW 19
 - Kernel driver исторически вызывал BSOD во время разработки. Это не обычный service driver; сохранять kernel dump перед новыми kernel-side изменениями и никогда не делать второй kdmapper map поверх активного.
 - Не утверждать, что driver unload/reload или EAC-совместимость протестированы. Тесты и build checks не заменяют owner runtime.
 
+## Протокол драйвера: один заголовок, две стороны, host-тест
+
+Раскладка `NA_SHM` раньше была продублирована руками в `nzl/driver/sc.h` и `nzl/client/sc_client.h`. Любое расхождение (лишнее поле, другой pack, другая ширина `NTSTATUS`) сдвигает все последующие смещения, драйвер начинает читать VA клиента из чужого слота — это wild-адрес в `MmCopyVirtualMemory`, то есть ровно класс BSOD #1–#4. Теперь раскладка определена один раз в `na_wire.h`, а `NA_STATIC_ASSERT` внутри заголовка компилируется **обеими** сторонами: расхождение стало ошибкой сборки, а не синим экраном.
+
+Закреплённые смещения (`NA_SHM_OFF_*`): `region 0x34`, `items 0x54`, `data 0x454`, `sizeof 0x10454`. Первые два адреса из `0x1E`-дампов (`...0034`) и адрес из `0x50`-дампа (`...0454`) попадают точно в `region` и `data` — эти два значения закреплены тестом.
+
+Исправлено в этой итерации:
+
+- `NA_CMD_SCAN`: при заполнении `maxcand` в середине 64-КБ чанка resume-VA возвращался как начало чанка, следующий вызов находил те же кандидаты и возвращал тот же resume-VA — клиентский `while (next)` не завершался никогда. Теперь resume-VA = первый ещё не просмотренный qword, прогресс строгий, дубликатов и пропусков нет. Проверено property-тестом против brute-force эталона.
+- `NA_CMD_MODULE` был объявлен в обоих заголовках и реализован ни в одном: в `switch` воркера не было `case`, `NaGetModule()` всегда возвращал 0, выглядя рабочим API. Реализовано через PEB walk по `BaseDllName` (`na_pebwalk.h`) с чтением только через `MmCopyVirtualMemory`.
+- `g_active` выставлялся **после** `PsCreateSystemThread`: поток мог увидеть 0, выйти и оставить драйвер загруженным, с ключом в реестре и без единого ответа на команду.
+- `NaUnload` не был назначен в `DriverEntry` (мёртвый код). Назначен; при таймауте ожидания воркера view не размапливается, чтобы не освобождать память под работающим потоком.
+- `NaPeb` и `NaAlloc` получили проверки диапазона/размера.
+
 ## Проверки и текущий статус
 
 **В sandbox проверено:**
 
 - Direct host g++ C++20 builds/runs of `test_chain`, `test_pipeline`, `test_profile`, and the new `test_skeleton` all passed. These cover the bounded raw skeleton parser with synthetic FakeMemory data; they do not validate target-game values.
 - Python: `py_compile robrun.py` и `unittest discover -s tests -v`; 12 tests прошли ранее.
+- `nzl_protocol_tests` (host, g++ 12.2 C++20): 300 272 проверки, 0 падений — раскладка `NA_SHM`, fuzz `na_user_range`/batch-предикатов, полнота скана против brute-force, отсутствие ливлока resume-VA, unreadable-страницы, byte-budget, PEB walk на синтетическом PEB. Прогнано также под ASan+UBSan.
+- `sh nzl/driver/check_driver.sh` — `sc_drv.c` целиком компилируется (`-Wall -Wextra -Werror`, WDK shim) exit 0; `sh nzl/client/check_client.sh` — `sc_client.cpp` exit 0.
 
 **На Windows владельца проверено:**
 

@@ -166,7 +166,13 @@ UINT32 NaScan(UINT32 pid, UINT64 pattern, UINT64 start, UINT64* candidates, UINT
     UINT32 found = s->count;
     if (found > maxcand) found = maxcand;
     memcpy(candidates, s->data, found * 8);
-    if (next) *next = s->address;
+    if (next) {
+        // A resume VA that does not advance past `start` would make the
+        // discovery loop re-read the same chunk forever. Treat a
+        // non-advancing answer as "scan finished" instead of spinning.
+        const UINT64 resume = s->address;
+        *next = (resume > start) ? resume : 0;
+    }
     return found;
 }
 
