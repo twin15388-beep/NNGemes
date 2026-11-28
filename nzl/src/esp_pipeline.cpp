@@ -121,14 +121,25 @@ std::vector<PlayerSnap> snapshot_players(const IMemory& memory,
   return players;
 }
 bool world_to_screen(const CameraView& c, const Vec3f& w, float& sx, float& sy, float& depth){
-  if(c.width<=0||c.height<=0||c.fov_deg<=1||c.fov_deg>=179) return false;
+  // Prefer the game's own projection terms. A guessed FOV of 90 degrees plus
+  // the overlay's aspect ratio is only correct for one lens on one monitor;
+  // everything else drifts off the player towards the screen edges.
+  const bool exact = c.proj_x > 0.01f && c.proj_y > 0.01f &&
+                     std::isfinite(c.proj_x) && std::isfinite(c.proj_y);
+  if(c.width<=0||c.height<=0) return false;
+  if(!exact && (c.fov_deg<=1||c.fov_deg>=179)) return false;
   Vec3f d = sub(w, c.pos);
   float cz = dot(d, c.fwd); depth = cz;
   if(!(cz>0.05f) || !std::isfinite(cz)) return false;
   float cx = dot(d, c.right), cy = dot(d, c.up);
-  float tan_half = std::tan(c.fov_deg*0.01745329252f*0.5f);
-  float aspect = (float)c.width/(float)c.height;
-  float nx = (cx/cz)/(tan_half*aspect), ny = (cy/cz)/tan_half;
+  float nx, ny;
+  if(exact){
+    nx = (cx/cz)/c.proj_x; ny = (cy/cz)/c.proj_y;
+  } else {
+    float tan_half = std::tan(c.fov_deg*0.01745329252f*0.5f);
+    float aspect = (float)c.width/(float)c.height;
+    nx = (cx/cz)/(tan_half*aspect); ny = (cy/cz)/tan_half;
+  }
   if(!std::isfinite(nx)||!std::isfinite(ny)) return false;
   sx = (nx*0.5f+0.5f)*(float)c.width; sy = (1.0f-(ny*0.5f+0.5f))*(float)c.height;
   return nx>-1.2f && nx<1.2f && ny>-1.2f && ny<1.2f;

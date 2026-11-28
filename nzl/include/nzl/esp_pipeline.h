@@ -10,6 +10,10 @@ struct CameraView {
   float fov_deg = 90.0f;
   float head_height_m = 1.80f;
   int width = 1920, height = 1080;
+  // Projection terms taken from the game's own projection matrix (m00 and
+  // m11). When both are set world_to_screen uses them instead of a guessed
+  // FOV and a guessed aspect ratio, which is what put boxes off the player.
+  float proj_x = 0.0f, proj_y = 0.0f;
 };
 enum class CameraBasisSource { Invalid, RawAxes, Quaternion };
 struct CameraBasisSelection {

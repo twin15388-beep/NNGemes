@@ -103,6 +103,7 @@ BattleCharacter ............ NAME_OK (все семь)
 [root] ROOT_OK Game=0x1F342019F00 GameModel=0x10x... Dict=0x... Camera=0x...
 [profile] roster dictionary Count=9 array_capacity=17
 [camera] vectors=OK pos=(-41.10,7.42,-30.88) fwd=(0.10,-0.40,-0.91)
+[camera] projection=EXACT offset=0x... m00=... m11=... fovY=...
 [snapshot] roster_count=9 valid_pos=3 drawn=1 draw_commands=2
   #23844 alive pos=(-40.21,3.94,-35.77) dist=6.1m
   entry[0] id=23844 entity=0x... class=BattleCharacter
@@ -114,6 +115,11 @@ BattleCharacter ............ NAME_OK (все семь)
     slot[3] 0x... LootModel
 [sweep] named_fields=6
 ```
+
+`[camera] projection=EXACT` — самый важный признак: угол обзора и пропорции
+берутся из матрицы самой игры, а не из предположения про 90°. Если вместо этого
+`projection=NONE`, боксы будут смещены к краям экрана, и это надо лечить
+отдельно (значит, матрицы в модели камеры нет и нужен другой источник).
 
 `entry[...]` печатается по одной строке на каждого игрока из ростера: адрес
 объекта и его имя класса. Если `covered` меньше `roster_count` или рядом стоит

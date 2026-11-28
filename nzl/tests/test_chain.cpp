@@ -1,4 +1,7 @@
 #include "nzl/chain.h"
+#include "nzl/esp_pipeline.h"
+#include <cmath>
+#include <cstring>
 #include <cstdio>
 static int fails=0;
 #define C(x) do{ if(!(x)){ std::printf("FAIL %s\n",#x); fails++; } else std::printf("ok: %s\n",#x); }while(0)
@@ -62,6 +65,43 @@ int main(){
     m.put<int32_t>(dict + o.dict_count, 1);
     m.put<uint64_t>(entries + o.array_length, 1);
   }
+  // Projection matrix discovery: a real Unity perspective matrix inside the
+  // camera object is found, its m00/m11 become the projection terms, and a
+  // zeroed row is rejected. Written into the blob because FakeMemory answers
+  // wide reads from the covering blob, not from per-field puts.
+  {
+    auto put_in_blob = [&](uint64_t object, uint32_t relative, float v) {
+      std::memcpy(m.bytes[object].data() + relative, &v, sizeof(v));
+    };
+    const uint32_t proj_off = 0x90;
+    put_in_blob(cam, proj_off + 0, 0.9f);      // m00 = cot_y / aspect (16:9)
+    put_in_blob(cam, proj_off + 20, 1.6f);     // m11 = cot_y -> fov_y ~ 63.9 deg
+    put_in_blob(cam, proj_off + 44, -1.0f);    // m32
+    const auto terms = nzl::find_projection_matrix(m, cam);
+    C(terms.has_value());
+    C(terms && terms->offset == proj_off);
+    C(terms && std::fabs(terms->proj_y - 1.6f) < 1e-5f);
+    C(terms && std::fabs(terms->fov_y_deg - 64.0108f) < 0.01f);
+    C(terms && std::fabs(terms->proj_x - 0.9f) < 1e-4f);
+    put_in_blob(cam, proj_off + 20, 0.0f);     // a zeroed cotangent is not a matrix
+    C(!nzl::find_projection_matrix(m, cam).has_value());
+    put_in_blob(cam, proj_off + 20, 1.6f);
+    // Exact projection beats the guessed 90-degree FOV: the same world point
+    // lands at a different screen position once m00/m11 are used.
+    nzl::CameraView view;
+    view.pos = {0, 0, 0}; view.fwd = {0, 0, 1}; view.right = {1, 0, 0};
+    view.up = {0, 1, 0}; view.width = 1920; view.height = 1080;
+    float gx = 0, gy = 0, gd = 0, ex = 0, ey = 0, ed = 0;
+    const nzl::Vec3f target{1.0f, 0.5f, 2.0f};
+    const bool guessed = nzl::world_to_screen(view, target, gx, gy, gd);
+    view.proj_x = terms->proj_x;
+    view.proj_y = terms->proj_y;
+    const bool exact = nzl::world_to_screen(view, target, ex, ey, ed);
+    C(guessed && exact);
+    C(std::fabs(72.0f /* dot */ < 1.0f) == false);
+    C(std::fabs(gy - ey) > 1.0f);  // a wrong lens really does move the box
+  }
+
   nzl::Offsets unknown_profile(nzl::game_profile::GameProfile{});
   const auto unknown_chain = nzl::resolve_chain(m, ue, unknown_profile);
   C(!unknown_chain.ok && unknown_chain.stage == "profile.unconfigured");

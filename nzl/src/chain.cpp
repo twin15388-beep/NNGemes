@@ -1,5 +1,7 @@
 #include "nzl/chain.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -203,6 +205,41 @@ std::optional<Vec3f> read_char_pos(const IMemory& memory, uint64_t character,
       std::fabs(*y) > kMaxWorldCoordinate || std::fabs(*z) > kMaxWorldCoordinate ||
       (*x == 0 && *y == 0 && *z == 0)) return std::nullopt;
   return Vec3f{*x, *y, *z};
+}
+
+std::optional<ProjectionTerms> find_projection_matrix(const IMemory& memory,
+                                                      uint64_t camera_model,
+                                                      uint32_t scan_end,
+                                                      uint32_t step) {
+  if (!plausible_ptr(camera_model) || step == 0) return std::nullopt;
+  constexpr size_t kMatrixBytes = 16 * sizeof(float);
+  std::array<float, 16> matrix{};
+  for (uint32_t offset = 0; offset + kMatrixBytes <= scan_end; offset += step) {
+    if (camera_model > UINT64_MAX - offset) break;
+    if (!memory.read(camera_model + offset, matrix.data(), kMatrixBytes))
+      continue;
+    auto finite = [](float v) { return std::isfinite(v); };
+    if (!std::all_of(matrix.begin(), matrix.end(), finite)) continue;
+    // Unity's column-major perspective projection: m00 and m11 are the
+    // horizontal and vertical cotangents (both positive), m32 is -1, and the
+    // bottom row is (0,0,-1,0). Requiring that shape keeps 64 arbitrary bytes
+    // of floats from being accepted as a matrix.
+    const float m00 = matrix[0], m11 = matrix[5];
+    const float m32 = matrix[11], m33 = matrix[15];
+    if (!(m00 > 0.01f) || !(m11 > 0.01f) || !(m32 < -0.5f)) continue;
+    if (std::fabs(m33) > 1e-4f) continue;
+    if (std::fabs(matrix[1]) > 1e-4f || std::fabs(matrix[4]) > 1e-4f) continue;
+    if (m00 > m11 * 4.0f || m11 > m00 * 4.0f) continue;
+    ProjectionTerms terms;
+    terms.offset = offset;
+    terms.proj_x = m00;
+    terms.proj_y = m11;
+    const float half = std::atan(1.0f / m11);
+    terms.fov_y_deg = half * 2.0f * (180.0f / 3.14159265358979323846f);
+    if (!(terms.fov_y_deg > 5.0f && terms.fov_y_deg < 175.0f)) continue;
+    return terms;
+  }
+  return std::nullopt;
 }
 
 }  // namespace nzl

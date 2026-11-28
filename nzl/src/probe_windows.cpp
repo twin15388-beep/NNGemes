@@ -502,6 +502,20 @@ int main(int argc, char** argv) {
       view.fov_deg = offsets.assumed_vertical_fov_deg;
       view.width = GetSystemMetrics(SM_CXSCREEN);
       view.height = GetSystemMetrics(SM_CYSCREEN);
+      // The projection matrix, if the camera model carries one, replaces the
+      // assumed 90-degree lens and the desktop aspect ratio.
+      const auto projection =
+          nzl::find_projection_matrix(mem, live_chain.camera_model);
+      if (projection) {
+        view.proj_x = projection->proj_x;
+        view.proj_y = projection->proj_y;
+        logf("[camera] projection=EXACT offset=0x%X m00=%.4f m11=%.4f fovY=%.1f\n",
+             projection->offset, projection->proj_x, projection->proj_y,
+             projection->fov_y_deg);
+      } else {
+        logf("[camera] projection=NONE - falling back to assumed fov=%.1f\n",
+             view.fov_deg);
+      }
       const auto draws = nzl::build_draw_list(view, players, 500.0f);
       size_t drawn_players = 0;
       for (const auto& command : draws)

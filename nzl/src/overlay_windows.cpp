@@ -182,6 +182,9 @@ struct Ctx {
   nzl::ChainResult chain;
   uint64_t player_class = 0;
   std::vector<RenderEnt> render;
+  RECT dirty{};            // union of this and the previous frame's bounds
+  bool dirty_valid = false;
+  uint32_t dirty_frames = 0;
   std::vector<LootEnt> loot;
   std::vector<CarEnt> cars;
   std::unordered_map<uint64_t, std::string> class_name_cache;
@@ -1960,12 +1963,18 @@ static void esp_worker(Ctx* ui) {
   nzl::Offsets off(profile);
   nzl::ChainResult chain;
   PlayerCache player_cache;
+  // Projection terms come from the game's own matrix, refreshed once a second
+  // so a resolution or FOV change is picked up without a restart.
+  std::optional<nzl::ProjectionTerms> projection;
+  ULONGLONG last_projection_check = 0;
+  char projection_detail[96] = "PROJ guess (not measured yet)";
   while (!g_stop.load()) {
     DWORD pid = find_pid(L"ROB RUN.exe");
     if (!pid) {
       if (mem) { mem->close(); mem.reset(); }
       active_pid = 0; mem_ready = false; profile_identity_checked = false;
       profile_identity_ok = false; ga = 0; game_obj = 0; chain = {}; player_cache = {};
+      projection.reset(); last_projection_check = 0;
       std::fill(std::begin(klass), std::end(klass), 0);
       set_runtime(ui, 0, false, "Waiting for ROB RUN process", true);
       Sleep(500); continue;
@@ -1974,6 +1983,7 @@ static void esp_worker(Ctx* ui) {
       if (mem) { mem->close(); mem.reset(); }
       active_pid = pid; mem_ready = false; profile_identity_checked = false;
       profile_identity_ok = false; ga = 0; game_obj = 0; chain = {}; player_cache = {};
+      projection.reset(); last_projection_check = 0;
       std::fill(std::begin(klass), std::end(klass), 0);
       mem = std::make_unique<nzl::DriverMemory>(pid);
       set_runtime(ui, pid, false, "ROB RUN found - connecting to driver", true);
@@ -2149,10 +2159,24 @@ static void esp_worker(Ctx* ui) {
       cfwd = basis.fwd; cright = basis.right; cup = basis.up;
       camera_basis_fail_streak = 0;
       work.cam_fwd = cfwd; work.cam_right = cright; work.radar_cam = cpos;
+      const ULONGLONG projection_now = GetTickCount64();
+      if (!last_projection_check || projection_now - last_projection_check >= 1000) {
+        projection = nzl::find_projection_matrix(*mem, chain.camera_model);
+        last_projection_check = projection_now;
+        if (projection)
+          std::snprintf(projection_detail, sizeof(projection_detail),
+                        "PROJ exact m00=%.4f m11=%.4f @0x%X fovY=%.1f",
+                        projection->proj_x, projection->proj_y,
+                        projection->offset, projection->fov_y_deg);
+        else
+          std::snprintf(projection_detail, sizeof(projection_detail),
+                        "PROJ guess fov=%.0f (no matrix found)", work.fov);
+      }
       auto players = snapshot_players(work, cpos, player_cache, now);
       nzl::CameraView view;
       view.pos = cpos; view.fwd = cfwd; view.right = cright; view.up = cup;
       view.width = std::max(work.width, 1); view.height = std::max(work.height, 1); view.fov_deg = work.fov;
+      if (projection) { view.proj_x = projection->proj_x; view.proj_y = projection->proj_y; }
       work.render.clear();
       size_t culled_dead = 0, culled_distance = 0, culled_view = 0, culled_edge = 0;
       const float bone_height[] = {work.off.aim_head_height_m,
@@ -2291,11 +2315,45 @@ static void esp_worker(Ctx* ui) {
         const size_t used = std::strlen(status);
         if (used + 96 < sizeof(status))
           std::snprintf(status + used, sizeof(status) - used,
-                        "\nNAME %s | REPOINT %zu TFAIL %zu",
+                        "\nNAME %s | REPOINT %zu TFAIL %zu\n%s",
                         name_stage_text(player_cache.name_stage),
                         player_cache.transform_repoints,
-                        player_cache.transform_refresh_failures);
+                        player_cache.transform_refresh_failures,
+                        projection_detail);
       }
+      // Repainting a full-screen layered window every frame makes Windows
+      // recomposite the whole surface, which is its own source of stutter.
+      // Track the union of this frame's boxes and the previous frame's, and
+      // repaint only that, with a full repaint every 30 frames as a safety net.
+      RECT frame_bounds{};
+      bool has_frame_bounds = false;
+      auto include_rect = [&](long left, long top, long right, long bottom) {
+        if (left > right) std::swap(left, right);
+        if (top > bottom) std::swap(top, bottom);
+        if (!has_frame_bounds) {
+          frame_bounds = RECT{(LONG)left, (LONG)top, (LONG)right, (LONG)bottom};
+          has_frame_bounds = true;
+          return;
+        }
+        frame_bounds.left = std::min(frame_bounds.left, (LONG)left);
+        frame_bounds.top = std::min(frame_bounds.top, (LONG)top);
+        frame_bounds.right = std::max(frame_bounds.right, (LONG)right);
+        frame_bounds.bottom = std::max(frame_bounds.bottom, (LONG)bottom);
+      };
+      for (const auto& target : work.render) {
+        const float height = std::fabs(target.fy - target.hy);
+        if (height < 2.0f) continue;
+        const float width = height * 0.62f;
+        include_rect((long)(target.hx - width), (long)target.hy - 22,
+                     (long)(target.hx + width), (long)target.fy + 4);
+        const size_t text_len = target.nickname.empty() ? 9 : target.nickname.size() + 9;
+        include_rect((long)target.hx, (long)target.hy - 40,
+                     (long)target.hx + (long)(text_len * 9), (long)target.hy - 10);
+      }
+      include_rect(0, 0, work.width, 96); // status block, always redrawn
+      if (work.show_radar)
+        include_rect(work.width - 220, 0, work.width, 220);
+      if (work.tracers) include_rect(0, 0, work.width, work.height);
       HWND menu_wnd = nullptr;
       bool menu_open = false;
       {
@@ -2303,10 +2361,21 @@ static void esp_worker(Ctx* ui) {
         ui->render = work.render; ui->loot = work.loot; ui->cars = work.cars;
         ui->cam_fwd = work.cam_fwd; ui->cam_right = work.cam_right; ui->radar_cam = work.radar_cam;
         ui->attached_pid = pid; ui->esp_ready = true; ui->status = status;
+        if (ui->dirty_valid && has_frame_bounds) {
+          frame_bounds.left = std::min(frame_bounds.left, ui->dirty.left);
+          frame_bounds.top = std::min(frame_bounds.top, ui->dirty.top);
+          frame_bounds.right = std::max(frame_bounds.right, ui->dirty.right);
+          frame_bounds.bottom = std::max(frame_bounds.bottom, ui->dirty.bottom);
+        }
+        ui->dirty = has_frame_bounds ? frame_bounds : RECT{};
+        ui->dirty_valid = has_frame_bounds;
         menu_wnd = ui->menu_wnd;
         menu_open = ui->menu;
       }
-      if (ui->overlay_wnd) InvalidateRect(ui->overlay_wnd, nullptr, FALSE);
+      if (ui->overlay_wnd) {
+        const bool full_repaint = !has_frame_bounds || (++ui->dirty_frames % 30) == 0;
+        InvalidateRect(ui->overlay_wnd, full_repaint ? nullptr : &ui->dirty, FALSE);
+      }
       if (menu_wnd && menu_open && sample_time - last_menu_status_invalidate >= 250) {
         last_menu_status_invalidate = sample_time;
         InvalidateRect(menu_wnd, nullptr, FALSE);

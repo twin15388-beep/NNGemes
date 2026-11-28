@@ -226,4 +226,16 @@ std::optional<uint64_t> dict_value_at(const IMemory& m, const DictHeader& h,
                                       int index, const Offsets& o);
 std::optional<Vec3f> read_char_pos(const IMemory& m, uint64_t character, const Offsets& o);
 std::optional<Vec3f> read_vec3(const IMemory& m, uint64_t addr);
+// The camera model carries a Unity projection matrix. Its m00/m11 terms give
+// the exact horizontal and vertical cotangents, so the renderer stops guessing
+// FOV (90 deg) and aspect (overlay size) and projects with the game's numbers.
+struct ProjectionTerms {
+  uint32_t offset = 0;
+  float proj_x = 0, proj_y = 0; // m00, m11
+  float fov_y_deg = 0;
+};
+std::optional<ProjectionTerms> find_projection_matrix(const IMemory& m,
+                                                      uint64_t camera_model,
+                                                      uint32_t scan_end = 0x200,
+                                                      uint32_t step = 8);
 }
