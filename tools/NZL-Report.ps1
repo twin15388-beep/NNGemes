@@ -33,6 +33,7 @@ $ErrorActionPreference = 'Continue'
 function Write-Nzl([string]$m) { Write-Host "[NZL] $m" -ForegroundColor Magenta }
 
 $root = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot "nzl-dumpheader.ps1")
 if (-not $root) { $root = (Get-Location).Path }
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $report = Join-Path $root "nzl_report_$stamp.txt"
@@ -247,14 +248,41 @@ if ($probeCandidates.Count -eq 0) {
 Add-Section "crash info"
 try {
     $ev = Get-WinEvent -FilterHashtable @{LogName='System'; Id=1001} -MaxEvents 5 -ErrorAction Stop
-    foreach ($e in $ev) { Add-Line "BugCheck $($e.TimeCreated): $($e.Message -replace "`r?`n", ' ')" }
-} catch { Add-Line "BugCheck events: none/failed ($($_.Exception.Message))" }
-if (Test-Path "C:\Windows\Minidump") {
-    Get-ChildItem "C:\Windows\Minidump\*.dmp" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 5 | ForEach-Object {
-            Add-Line ("dump: {0}  {1}  {2}" -f $_.Name, $_.Length, $_.LastWriteTime.ToString('o'))
+    foreach ($e in $ev) {
+        Add-Line "BugCheck $($e.TimeCreated): $($e.Message -replace "`r?`n", ' ')"
+        # The message is localised ("Код ошибки: 0x0000001e (...)"), so pull the
+        # numbers out by shape instead of trusting the words.
+        $hex = [regex]::Matches($e.Message, '0x[0-9a-fA-F]{8,16}')
+        if ($hex.Count -gt 0) {
+            Add-Line ("  parsed: code=0x{0}  args={1}" -f $hex[0].Value, (($hex | Select-Object -Skip 1 | ForEach-Object { $_.Value }) -join ' '))
         }
+    }
+} catch { Add-Line "BugCheck events: none/failed ($($_.Exception.Message))" }
+# The stop code is in the first 0x60 bytes of the dump. Decode it here so the
+# numbers survive a localised event log and do not depend on WinDbg.
+if (Test-Path "C:\Windows\Minidump") {
+    $dumps = Get-ChildItem "C:\Windows\Minidump\*.dmp" -ErrorAction SilentlyContinue |
+             Sort-Object LastWriteTime -Descending
+    if (-not $dumps) { Add-Line "C:\Windows\Minidump: empty" }
+    foreach ($d in ($dumps | Select-Object -First 3)) {
+        Add-Line ("dump: {0}  {1}  {2}" -f $d.Name, $d.Length, $d.LastWriteTime.ToString('o'))
+        $hdr = Read-NzlDumpHeader $d.FullName
+        foreach ($l in ((Format-NzlDumpHeader $hdr) -split "`r?`n")) { if ($l) { Add-Line $l } }
+    }
 } else { Add-Line "C:\Windows\Minidump: missing" }
+$bootTime = $null
+try { $bootTime = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime } catch {}
+if ($bootTime) { Add-Line "last boot: $($bootTime.ToString('o'))" }
+if (Test-Path "C:\Windows\MEMORY.DMP") {
+    $m = Get-Item "C:\Windows\MEMORY.DMP"
+    Add-Line ("MEMORY.DMP: {0} bytes  {1}" -f $m.Length, $m.LastWriteTime.ToString('o'))
+    foreach ($l in ((Format-NzlDumpHeader (Read-NzlDumpHeader $m.FullName)) -split "`r?`n")) { if ($l) { Add-Line $l } }
+    if ($bootTime -and $m.LastWriteTime -lt $bootTime) {
+        Add-Line "VERDICT: MEMORY.DMP is older than the last boot - it belongs to a PREVIOUS crash, not this one."
+    } else {
+        Add-Line "VERDICT: MEMORY.DMP is from this boot session - it is the crash we are chasing."
+    }
+} else { Add-Line "MEMORY.DMP: missing (kernel dump not written - CrashDumpEnabled may not have taken effect)" }
 
 # ---------------------------------------------------------------- package
 Add-Section "package artefacts"

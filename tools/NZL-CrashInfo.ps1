@@ -8,6 +8,7 @@ NZL Studio - сбор диагностики после BSOD (Windows, PowerShel
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 function Write-Nzl([string]$m) { Write-Host "[NZL] $m" -ForegroundColor Magenta }
 $root = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot "nzl-dumpheader.ps1")
 $out = Join-Path $root "crash_info"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $log = Join-Path $out "crash_info.txt"
@@ -36,12 +37,16 @@ if (Test-Path $dumpDir) {
             Copy-Item $d.FullName (Join-Path $out $d.Name) -Force
             Add-Log "Copied to crash_info\$($d.Name) - send me this file."
         } catch { Add-Log "Copy failed (need admin): $($_.Exception.Message)" }
-        $dumps | Select-Object -First 5 | ForEach-Object { Add-Log "  dump: $($_.Name) $($_.LastWriteTime)" }
+        $dumps | Select-Object -First 3 | ForEach-Object {
+            Add-Log "  dump: $($_.Name) $($_.LastWriteTime)"
+            foreach ($l in ((Format-NzlDumpHeader (Read-NzlDumpHeader $_.FullName)) -split "`r?`n")) { if ($l) { Add-Log $l } }
+        }
     } else { Add-Log "Minidump folder empty - crash dumps may be disabled." }
 } else { Add-Log "C:\Windows\Minidump not found." }
 if (Test-Path "C:\Windows\MEMORY.DMP") {
     $m = Get-Item "C:\Windows\MEMORY.DMP"
     Add-Log "MEMORY.DMP exists size=$($m.Length) time=$($m.LastWriteTime) (do NOT send whole, minidump is enough)"
+    foreach ($l in ((Format-NzlDumpHeader (Read-NzlDumpHeader $m.FullName)) -split "`r?`n")) { if ($l) { Add-Log $l } }
 }
 Add-Log "NOTE: after reboot the kdmapper driver is GONE (manual map). Do not load driver.sys again until I say so."
 Write-Nzl "Send me: crash_info\crash_info.txt + the .dmp file from crash_info\"

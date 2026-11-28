@@ -1,3 +1,13 @@
+/* WDK shim: enough of <ntddk.h> to syntax-check sc_drv.c with a host gcc.
+ * Not a real header - layouts only have to be close enough that the code
+ * compiles and type-checks. */
+typedef short CSHORT;
+typedef unsigned short USHORT;
+
+#ifndef ARGUMENT_PRESENT
+#define ARGUMENT_PRESENT(x) ((x) != NULL)
+#endif
+
 /* NZL Studio — MINIMAL WDK shim, for a host-side syntax check of sc_drv.c.
  *
  * This is NOT a WDK replacement and NOT an ABI model. It exists so that
@@ -43,7 +53,19 @@ typedef struct _EPROCESS   EPROCESS, *PEPROCESS;
 struct _DRIVER_OBJECT;
 typedef VOID (*PDRIVER_UNLOAD)(struct _DRIVER_OBJECT*);
 typedef struct _DRIVER_OBJECT {
-    LONG Type;
+    CSHORT Type;          /* real WDK: IO_TYPE_DRIVER (3) */
+    CSHORT Size;          /* real WDK: sizeof(DRIVER_OBJECT) */
+    PVOID  DeviceObject;
+    PVOID  Flags;
+    PVOID  DriverStart;
+    ULONG  DriverSize;
+    PVOID  DriverSection;
+    PVOID  DriverExtension;
+    PVOID  DriverName;
+    PVOID  HardwareDatabase;
+    PVOID  FastIoDispatch;
+    PVOID  DriverInit;
+    PVOID  DriverStartIo;
     PDRIVER_UNLOAD DriverUnload;
 } DRIVER_OBJECT, *PDRIVER_OBJECT;
 
@@ -208,3 +230,5 @@ LONG     InterlockedAdd(volatile LONG* target, LONG value);
 LONG     InterlockedExchange(volatile LONG* target, LONG value);
 
 #endif
+
+BOOLEAN MmIsAddressValid(PVOID VirtualAddress);

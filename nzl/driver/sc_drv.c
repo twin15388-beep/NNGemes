@@ -591,12 +591,31 @@ done:
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
+/* Manual mappers call the entry point with a scratch or NULL driver object:
+ * it is NOT a DRIVER_OBJECT because there is no I/O manager in the picture.
+ * Writing drv->DriverUnload unconditionally was the first change to touch
+ * drv at all, and the first load of that build bugchecked before the game
+ * was even started. Never write through drv unless it is a kernel pointer
+ * that also looks like a real driver object. */
+#define NA_KERNEL_PTR_BASE 0xFFFF800000000000ULL
+#define NA_IO_TYPE_DRIVER  3
+
+static BOOLEAN NaDriverObjectWritable(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
+{
+    if (!ARGUMENT_PRESENT(drv) || !ARGUMENT_PRESENT(reg)) return FALSE;
+    if ((ULONG_PTR)drv < (ULONG_PTR)NA_KERNEL_PTR_BASE) return FALSE;
+    if (!MmIsAddressValid(drv)) return FALSE;
+    if (drv->Type != NA_IO_TYPE_DRIVER) return FALSE;
+    if ((SIZE_T)drv->Size != sizeof(DRIVER_OBJECT)) return FALSE;
+    return TRUE;
+}
+
 NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
 {
-    UNREFERENCED_PARAMETER(reg);
-    // kdmapper manual-maps and never calls this, but a service/sc.exe load
-    // does, and NaUnload() used to be unreachable dead code.
-    drv->DriverUnload = NaUnload;
+    // A service/sc.exe load gets a real driver object and wants run-down
+    // handling; a kdmapper load gets a scratch block and can never be
+    // unloaded anyway. Only wire the unload routine for the former.
+    if (NaDriverObjectWritable(drv, reg)) drv->DriverUnload = NaUnload;
     OBJECT_ATTRIBUTES oa;
     InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
     HANDLE hThread;
