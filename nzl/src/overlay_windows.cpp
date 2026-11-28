@@ -1538,6 +1538,7 @@ static void esp_worker(Ctx* ui) {
     }
     if (!profile_identity_checked) {
       profile_identity_checked = true;
+      set_runtime(ui, pid, false, "Checking GameAssembly fingerprint...", false);
       const auto file_check = nzl::windows_profile::verify_gameassembly_file(pid, profile);
       if (!file_check.matched()) {
         std::string status = "Build profile blocked: ";

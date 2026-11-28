@@ -151,7 +151,9 @@ inline bool sha256_file(const std::filesystem::path& path, std::string& hex,
       algorithm.handle, &hash.handle, object.data(), object_length, nullptr, 0, 0));
   if (bcrypt_status < 0) return false;
 
-  std::array<UCHAR, 1u << 20> buffer{};
+  // This runs on the ESP worker's default 1 MiB Windows thread stack. Keep
+  // the streaming buffer on the heap to avoid STATUS_STACK_OVERFLOW here.
+  std::vector<UCHAR> buffer(1u << 20);
   for (;;) {
     DWORD bytes_read = 0;
     if (!ReadFile(file.handle, buffer.data(),
