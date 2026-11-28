@@ -1040,3 +1040,40 @@ test_protocol.cpp(177,10): error C2664: synth_read(void*,NA_U64,void*,NA_U32,NA_
 Проверено здесь: 5 наборов host-тестов + ASan/UBSan, оба syntax-гейта, новый
 type-gate — всё exit 0. Сборка MSVC не проверена (тулчейна нет) — нужен
 следующий `-Build`.
+
+## Скрипт отчёта: $Build против $build (2026-11-28 15:21)
+
+Третий прогон собрал всё до `driver.sys` и упал на строке 191:
+
+```
+Не удается преобразовать значение "System.String" в тип
+"System.Management.Automation.SwitchParameter"
+D:\NZL Rob run\tools\NZL-Report.ps1:191
++ $build = Join-Path $root "build-nzl"
+```
+
+Причина: в PowerShell имена переменных регистронезависимы, а параметр — это
+переменная. `param([switch]$Build, ...)` и локальная `$build` — ОДНА переменная.
+Присваивание строки switch-параметру — MetadataError и termination.
+
+Важное из того же прогона: `BuildAll exit=0` и `driver.sys is newer than
+sc_drv.c`. Значит MSVC-сборка зелёная целиком: драйвер `BUILD_OK`, приложения
+собраны, `nzl_protocol_tests` скомпилировался после перевода на `NA_*`-типы, а
+`NZL-BuildAll.ps1` возвращает 0 только при `ctest` exit=0 — то есть все пять
+наборов прошли. Отчёт оборвался до секции `LastTest.log`, поэтому число тестов
+в нём не видно.
+
+Сделано:
+- локальная `$build` переименована в `$buildDir`;
+- `tools/check_ps1.py` — статический чекер PowerShell: баланс скобок вне строк
+  и комментариев, дубли параметров и присваивание `[switch]`-параметру
+  (регистронезависимо). Переприсваивание `[string]`-параметров не флагуется —
+  это легальный PowerShell и так делают `NZL-Collect/Dump/LoadDriver/AnalyzeDump`;
+  проверено, что чекер даёт ровно одну ошибку — эту, строку 191, и ноль
+  ложных;
+- в конец отчёта добавлен маркер `complete: yes`, чтобы обрезанный отчёт был
+  виден сразу.
+
+pwsh в песочницу поставить нельзя (release-assets.githubusercontent.com
+заблокирован), поэтому проверка скриптов держится на `check_ps1.py` +
+балансе скобок.

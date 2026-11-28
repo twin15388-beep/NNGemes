@@ -188,17 +188,17 @@ foreach ($candidate in @("nzl\driver\driver.sys", "driver.sys")) {
 }
 
 # ---------------------------------------------------------------- build dir
-$build = Join-Path $root "build-nzl"
+$buildDir = Join-Path $root "build-nzl"
 Add-Section "build-nzl"
-if (Test-Path $build) {
+if (Test-Path $buildDir) {
     Add-Line "exists: yes"
-    $cache = Join-Path $build "CMakeCache.txt"
+    $cache = Join-Path $buildDir "CMakeCache.txt"
     if (Test-Path $cache) {
         Get-Content $cache | Where-Object {
             $_ -match 'CMAKE_CXX_COMPILER:|CMAKE_GENERATOR:|CMAKE_BUILD_TYPE:'
         } | ForEach-Object { Add-Line $_ }
     }
-    $log = Join-Path $build "Testing\Temporary\LastTest.log"
+    $log = Join-Path $buildDir "Testing\Temporary\LastTest.log"
     Add-Line ""
     Add-Line "--- LastTest.log ---"
     if (Test-Path $log) {
@@ -210,7 +210,7 @@ if (Test-Path $build) {
     }
     Add-Line ""
     Add-Line "--- built executables ---"
-    $exes = Get-ChildItem $build -Recurse -Include *.exe -ErrorAction SilentlyContinue |
+    $exes = Get-ChildItem $buildDir -Recurse -Include *.exe -ErrorAction SilentlyContinue |
         Sort-Object Name
     if ($exes) {
         foreach ($e in $exes) {
@@ -296,7 +296,7 @@ if ($GameDir -and (Test-Path $GameDir)) {
 Add-Section "verdict"
 $head = Invoke-Native 'git' @('-C', $root, 'rev-parse', '--short', 'HEAD')
 Add-Line "commit under test: $head"
-$log = Join-Path $build "Testing\Temporary\LastTest.log"
+$log = Join-Path $buildDir "Testing\Temporary\LastTest.log"
 if (Test-Path $log) {
     $content = Get-Content $log -Raw
     foreach ($suite in @('nzl_tests', 'nzl_pipeline_tests', 'nzl_profile_tests', 'nzl_skeleton_tests', 'nzl_protocol_tests')) {
@@ -307,12 +307,12 @@ if (Test-Path $log) {
     }
 }
 foreach ($exe in @("nzl_protocol_tests.exe", "nzl_probe.exe", "nzl_overlay.exe")) {
-    $p = Join-Path $build ("Release\" + $exe)
-    if (-not (Test-Path $p)) { $p = Join-Path $build $exe }
+    $p = Join-Path $buildDir ("Release\" + $exe)
+    if (-not (Test-Path $p)) { $p = Join-Path $buildDir $exe }
     Add-Line ("{0,-24} built={1}" -f $exe, (Test-Path $p))
 }
 $listsMtime = (Get-Item (Join-Path $root "nzl\CMakeLists.txt") -ErrorAction SilentlyContinue).LastWriteTime
-$cacheMtime = (Get-Item (Join-Path $build "CMakeCache.txt") -ErrorAction SilentlyContinue).LastWriteTime
+$cacheMtime = (Get-Item (Join-Path $buildDir "CMakeCache.txt") -ErrorAction SilentlyContinue).LastWriteTime
 Add-Line "nzl/CMakeLists.txt modified: $listsMtime"
 Add-Line "build-nzl/CMakeCache.txt modified: $cacheMtime"
 if ($listsMtime -and $cacheMtime) {
@@ -346,6 +346,10 @@ if ($CopyToDropbox) {
         Write-Nzl "no %USERPROFILE%\Dropbox folder - paste the txt instead"
     }
 }
+
+Add-Section "EOF"
+Add-Line "complete: yes"
+Add-Line "if this marker is missing the report was cut short by a runtime error - send it anyway"
 
 Write-Nzl "send the report back: $report"
 exit 0
