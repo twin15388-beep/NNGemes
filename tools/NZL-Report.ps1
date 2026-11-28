@@ -1,4 +1,4 @@
-<#
+﻿<#
 NZL Studio - one-shot state report (Windows PowerShell).
 Read-only: does NOT load the driver, does NOT start the game, does NOT run any BAT.
 

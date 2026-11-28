@@ -173,6 +173,39 @@ def check_file(path):
     return problems
 
 
+BOM = b"\xef\xbb\xbf"
+SMART = "\u2018\u2019\u201c\u201d"
+
+
+def encoding_problems(path):
+    """PowerShell 5.1 decodes a BOM-less .ps1 with the system ANSI codepage.
+    On a Russian Windows that is cp1251, where the UTF-8 bytes of capital
+    'В' 'Г' 'Д' become U+2018..U+201D - and PowerShell accepts those as string
+    delimiters. A double-quoted string containing capital 'Д' therefore ends
+    in the middle, and the parser reports an unexpected '}' lines later.
+    tools/NZL-Overlay.ps1 shipped that way on 2026-11-28 and would not start.
+    The fix is a UTF-8 BOM, which makes every PowerShell read the file as
+    UTF-8; this check makes sure nobody drops it again."""
+    raw = open(path, "rb").read()
+    problems = []
+    if not raw.startswith(BOM):
+        phantom = sum(1 for c in raw.decode("cp1251", "replace") if c in SMART)
+        problems.append(
+            "missing UTF-8 BOM - PowerShell 5.1 will decode this as the ANSI "
+            "codepage and %d smart quotes appear inside strings" % phantom)
+    # Second hazard, independent of the BOM: PowerShell accepts curly quotes
+    # as string delimiters too. A real U+2018..U+201D in the source (pasted
+    # from a document) terminates a string early no matter how the file is
+    # decoded, so it must never appear in code or in prose here.
+    text = raw.decode("utf-8", "replace")
+    for number, line in enumerate(text.splitlines(), 1):
+        if any(c in SMART for c in line):
+            problems.append(
+                "%s:%d: contains a curly quote (U+2018..U+201D); PowerShell "
+                "treats those as string delimiters" % (path, number))
+    return problems
+
+
 def main(argv):
     targets = argv[1:]
     if not targets:
@@ -180,7 +213,7 @@ def main(argv):
         targets = sorted(glob.glob(os.path.join(root, 'tools', '*.ps1')))
     failures = 0
     for path in targets:
-        problems = check_file(path)
+        problems = encoding_problems(path) + check_file(path)
         if problems:
             failures += 1
             for problem in problems:

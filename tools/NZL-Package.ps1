@@ -1,4 +1,4 @@
-<#
+﻿<#
 NZL Studio - ONE-FILE package builder.
 Produces a single NZL-Studio.bat in the project root with driver.sys,
 kdmapper.exe and nzl_overlay.exe embedded as base64 inside the .bat.

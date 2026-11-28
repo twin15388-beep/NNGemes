@@ -1,4 +1,4 @@
-<#
+﻿<#
 NZL Studio - build everything (Windows, run from the project root).
 Builds the MSVC+WDK driver, all three x64 NZL applications, then runs the
 host-side C++ tests. A non-zero process exit means at least one requested
