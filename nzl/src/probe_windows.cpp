@@ -240,6 +240,24 @@ int main(int argc, char** argv) {
        transport ? "TRANSPORT_OK - driver reads this process" :
                    "TRANSPORT_FAIL - see lines above, send me nzl_probe.txt");
 
+  // Latency bench. The overlay's update rate is bounded by round-trip cost,
+  // not by drawing: if one read costs 16 ms, reading a dozen fields for nine
+  // players costs two seconds per frame, which is what "опаздывает за игроком"
+  // looks like. Numbers first, then optimisation.
+  if (transport) {
+    constexpr int kBenchOps = 200;
+    const uint64_t bench_addr = ga ? ga : 0x10000;
+    unsigned char scratch[8]{};
+    int ok = 0;
+    const ULONGLONG bench_start = GetTickCount64();
+    for (int i = 0; i < kBenchOps; ++i)
+      if (NaRead(static_cast<uint32_t>(pid), bench_addr, sizeof(scratch), scratch)) ok++;
+    const ULONGLONG bench_ms = GetTickCount64() - bench_start;
+    logf("[bench] NaRead x%d: %llu ms total, %.3f ms/op (ok=%d/%d)\n",
+         kBenchOps, (unsigned long long)bench_ms,
+         kBenchOps ? static_cast<double>(bench_ms) / kBenchOps : 0.0, ok, kBenchOps);
+  }
+
   constexpr const auto& profile = nzl::game_profile::kOwnerProfile26866884;
   const nzl::Offsets offsets(profile);
   int result_code = transport ? 0 : 5;

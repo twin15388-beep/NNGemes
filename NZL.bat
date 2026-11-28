@@ -11,6 +11,7 @@ rem    .\NZL.bat report       full report, zipped, copied to Dropbox
 rem    .\NZL.bat build        driver + apps + host tests
 rem    .\NZL.bat load         map the driver, before starting the game
 rem    .\NZL.bat crash        BSOD dumps and bugcheck codes
+rem    .\NZL.bat clean        clean the working folder (dry run by default)
 rem  From any folder: PowerShell needs '& "D:\NZL Rob run\NZL.bat" overlay',
 rem  cmd.exe is happy with the bare quoted path.
 rem
@@ -69,6 +70,7 @@ echo   NZL.bat build     driver + apps + host tests
 echo   NZL.bat load      map the driver     (before starting the game)
 echo   NZL.bat crash     collect BSOD dumps and bugcheck codes
 echo   NZL.bat dump      switch to kernel memory dumps
+echo   NZL.bat clean     clean the working folder (dry run; -Apply to delete)
 echo.
 echo   PowerShell from the project folder (no operator needed):
 echo     .\NZL.bat overlay
