@@ -14,6 +14,32 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Write-Nzl "FAIL: нужен PowerShell ОТ АДМИНИСТРАТОРА (секция драйвера дает win32=5 без админа)."
     exit 2
 }
+# Driver first: a manual-mapped driver does not survive a reboot, so after any
+# restart this is the most likely reason a probe reads nothing.
+$reg = "HKLM:\SYSTEM\NaCoreFilter"
+if (-not (Test-Path $reg)) {
+    Write-Nzl "FAIL: драйвер не загружен (HKLM\SYSTEM\NaCoreFilter отсутствует)."
+    Write-Nzl "После перезагрузки manual-map драйвер НЕ выживает. Сначала:"
+    Write-Nzl "  powershell -ExecutionPolicy Bypass -File tools\NZL-LoadDriver.ps1"
+    exit 5
+}
+$loaded = Get-ItemProperty $reg -ErrorAction SilentlyContinue
+if (-not $loaded.Key -or [string]::IsNullOrWhiteSpace([string]$loaded.Shm)) {
+    Write-Nzl "FAIL: ключ HKLM\SYSTEM\NaCoreFilter есть, но Key/Shm пустые - драйвер стартовал не полностью."
+    Write-Nzl "Перезагрузи Windows и загрузи драйвер заново: tools\NZL-LoadDriver.ps1"
+    exit 5
+}
+Write-Nzl "драйвер загружен: Key=$($loaded.Key) Shm=$($loaded.Shm)"
+
+# The probe reads the live process; without the game there is nothing to read.
+$game = Get-Process "ROB RUN" -ErrorAction SilentlyContinue
+if (-not $game) {
+    Write-Nzl "FAIL: игра не запущена. probe читает ЖИВОЙ процесс, без игры проверять нечего."
+    Write-Nzl "Запусти игру через Steam, зайди В МАТЧ (не меню), и повтори эту же команду."
+    exit 4
+}
+Write-Nzl "игра запущена: pid=$($game.Id) - запускаю probe"
+
 $exe = Join-Path $root "build-nzl\Release\nzl_probe.exe"
 if (-not (Test-Path $exe)) {
     Write-Nzl "FAIL: nzl_probe.exe не найден. Сначала: tools\NZL-BuildAll.ps1"
