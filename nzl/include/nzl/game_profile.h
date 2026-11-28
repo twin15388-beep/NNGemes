@@ -63,6 +63,7 @@ struct DictionaryOffsets {
   OffsetValue entries_array_data{};
   OffsetValue entry_stride{};
   OffsetValue entry_hash{};
+  OffsetValue entry_key{};
   OffsetValue entry_value{};
   std::uint32_t max_entries = 0;  // reader safety bound, not a game offset
 };
@@ -75,6 +76,14 @@ struct CharacterOffsets {
   OffsetValue transform_y{};
   OffsetValue transform_z{};
   OffsetValue il2cpp_class_name{};
+};
+
+struct NicknameOffsets {
+  OffsetValue battle_model_character_slots{};
+  OffsetValue client_slots_by_entity_id{};
+  OffsetValue character_slot_data{};
+  OffsetValue character_slot_entity_id{};
+  OffsetValue character_slot_nickname{};
 };
 
 struct CameraOffsets {
@@ -107,13 +116,14 @@ struct OptionalFeatureOffsets {
   OffsetValue cars_dictionary{};
   OffsetValue car_transform{};
   OffsetValue car_position{};
-  // These stay false until the corresponding feature has been checked in a
-  // live match. Having a source value alone does not enable a feature.
+  // Nested features stay disabled until checked in a live match. Vehicle
+  // fields have an exact-build SDK source and use runtime model-class gates;
+  // this support flag does not claim that their live coordinates were tested.
   bool hp_live_verified = false;
   bool armor_live_verified = false;
   bool role_live_verified = false;
   bool loot_live_verified = false;
-  bool cars_live_verified = false;
+  bool cars_profile_supported = false;
 };
 
 struct GameProfile {
@@ -122,6 +132,7 @@ struct GameProfile {
   ChainOffsets chain{};
   DictionaryOffsets dictionary{};
   CharacterOffsets character{};
+  NicknameOffsets nickname{};
   CameraOffsets camera{};
   OptionalFeatureOffsets optional_features{};
   float head_height_m = 1.80f;
@@ -178,6 +189,7 @@ inline constexpr GameProfile kOwnerProfile26866884 = []() constexpr {
                  offset(0x20, Evidence::SingleSource, "InsideExploit SDK build 26866884; IL2CPP x64 array data; runtime bounds/hash gate"),
                  offset(0x18, Evidence::CrossChecked, "InsideExploit SDK build 26866884; justdoshiba Dictionary<int,reference> layout, build 26615022"),
                  offset(0x00, Evidence::SingleSource, "InsideExploit SDK build 26866884; IL2CPP Dictionary.Entry.hashCode; nonnegative-hash gate"),
+                 offset(0x08, Evidence::SingleSource, "InsideExploit SDK build 26866884; IL2CPP Dictionary.Entry.key; nickname lookup by entity ID"),
                  offset(0x10, Evidence::CrossChecked, "InsideExploit SDK build 26866884; justdoshiba Dictionary<int,reference> layout, build 26615022; runtime player-class gate"),
                  2048};
 
@@ -188,6 +200,17 @@ inline constexpr GameProfile kOwnerProfile26866884 = []() constexpr {
                  offset(0x14, Evidence::OwnerFingerprint, "owner SDK CharacterTransformModel, build 26866884; owner live player-position plausibility sample"),
                  offset(0x18, Evidence::OwnerFingerprint, "owner SDK CharacterTransformModel, build 26866884; owner live player-position plausibility sample; lm3684759 dump 2026-11-22 differs and is not selected"),
                  offset(0x10, Evidence::SingleSource, "InsideExploit SDK TypeInfo classes, build 26866884; IL2CPP Il2CppClass.name; all seven names checked at runtime")};
+
+  // Nickname lookup: BattleModel.CharacterSlotsModel ->
+  // ClientCharacterSlotsModel._slotByEntityId -> BattleCharacterSlotModel._data
+  // -> BattleCharacterSlotData.EntityId/Nickname -> StringData.Value (also
+  // accepts the SDK's NicknameData subclass). Class names and the slot/entity
+  // ID agreement are checked before accepting a name.
+  p.nickname = {offset(0x248, Evidence::SingleSource, "InsideExploit/rob-run-sdk@86baa8e/26866884/dump.cs; BattleModel.CharacterSlotsModel"),
+                offset(0x18, Evidence::SingleSource, "InsideExploit/rob-run-sdk@86baa8e/26866884/dump.cs; ClientCharacterSlotsModel._slotByEntityId"),
+                offset(0x10, Evidence::SingleSource, "InsideExploit/rob-run-sdk@86baa8e/26866884/dump.cs; BattleCharacterSlotModel._data"),
+                offset(0x20, Evidence::SingleSource, "InsideExploit/rob-run-sdk@86baa8e/26866884/dump.cs; BattleCharacterSlotData.EntityId, must agree with BattleCharacterModel.Id/dictionary key"),
+                offset(0x30, Evidence::SingleSource, "InsideExploit/rob-run-sdk@86baa8e/26866884/dump.cs; BattleCharacterSlotData.Nickname")};
 
   p.camera = {offset(0x10, Evidence::OwnerFingerprint, "owner live BattleCameraModel sample, build 26866884; uxxx00 headers 2026-11-23 corroborate, Steam build ID not recorded there"),
               offset(0x1C, Evidence::SingleSource, "uxxx00/Robrun-offsets-newest headers 2026-11-23; Steam build ID not recorded; not used by current renderer"),
@@ -205,17 +228,17 @@ inline constexpr GameProfile kOwnerProfile26866884 = []() constexpr {
       offset(0x20, Evidence::SingleSource, "owner SDK dump, build 26866884; HP chain not live-verified"),
       offset(0x1B8, Evidence::SingleSource, "owner SDK dump, build 26866884; armor chain not live-verified"),
       offset(0x10, Evidence::SingleSource, "owner SDK dump, build 26866884; armor/role chain not live-verified"),
-      offset(0x18, Evidence::SingleSource, "owner SDK dump, build 26866884; armor/role chain not live-verified"),
+      offset(0x18, Evidence::SingleSource, "InsideExploit SDK build 26866884; BasePrimitiveData<T> field order on x64 IL2CPP (_serializer then _value); runtime StringData/System.String class and length gates; not live-verified"),
       offset(0x208, Evidence::SingleSource, "owner SDK dump, build 26866884; role chain not live-verified"),
       offset(0x18, Evidence::SingleSource, "owner SDK dump, build 26866884; role chain not live-verified"),
       offset(0x18, Evidence::SingleSource, "owner SDK dump, build 26866884; role chain not live-verified"),
       offset(0x38, Evidence::SingleSource, "owner SDK dump, build 26866884; loot dictionary/layout not live-verified"),
       offset(0x20, Evidence::SingleSource, "owner SDK dump, build 26866884; loot transform not live-verified"),
       {}, {}, {},  // loot coordinate members are unknown; leave the feature gated off
-      offset(0x60, Evidence::SingleSource, "owner SDK dump, build 26866884; car dictionary/layout not live-verified"),
-      offset(0xC0, Evidence::SingleSource, "owner SDK dump, build 26866884; car transform not live-verified"),
-      offset(0x38, Evidence::SingleSource, "owner SDK dump, build 26866884; car position not live-verified"),
-      false, false, false, false, false};
+      offset(0x60, Evidence::SingleSource, "InsideExploit/rob-run-sdk@86baa8e/26866884/dump.cs; WorldEntitiesModel._cars"),
+      offset(0xC0, Evidence::SingleSource, "InsideExploit/rob-run-sdk@86baa8e/26866884/dump.cs; CarModel.Transform"),
+      offset(0x38, Evidence::SingleSource, "InsideExploit/rob-run-sdk@86baa8e/26866884/dump.cs; VehicleTransformModel center-of-mass position; runtime class/plausibility gates"),
+      false, false, false, false, true};
 
   p.head_height_m = 1.80f;
   p.aim_head_height_m = 1.75f;

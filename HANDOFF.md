@@ -601,11 +601,14 @@
   reject the actual Windows file and print the reason. Current owner coordinates
   use `+0x10/+0x14/+0x18`; a separate 2026-11-22 dump's `+0x10/+0x18/+0x20`
   coordinates are recorded only as conflicting evidence, not a fallback.
-- HP/armor/role/loot/cars remain live-unverified and feature-gated off; loot XYZ
-  remain unknown. Camera quaternion has a norm check and axis fallback. Aim uses
-  SendInput and approximate heights; skeleton is a screen-space approximation;
-  `visible_only` is a screen/frustum filter, not occlusion. Instant pickup is
-  explicitly excluded.
+- HP/armor/role/loot remain live-unverified and feature-gated off; loot XYZ
+  remain unknown. Cars now have an exact-build SDK profile path (`_cars +0x60`,
+  `CarModel.Transform +0xC0`, `VehicleTransformModel._centerOfMassPosition +0x38`)
+  that is guarded by runtime class-name and coordinate-plausibility checks, but
+  still has not been checked in a live match. Camera quaternion has a norm check
+  and axis fallback. Aim uses SendInput and approximate heights; skeleton is a
+  screen-space approximation; `visible_only` is a screen/frustum filter, not
+  occlusion. Instant pickup is explicitly excluded.
 
 ## Continuity record and current handoff (2026-11-27)
 
@@ -617,9 +620,9 @@
 - Owner's reported Windows folder is `D:\NZL Rob run`. Arena cannot write to
   that D: drive; source transfer uses the ZIP below. Extract over the project root
   but do not use the older `NZL-Studio-Package.zip` as an updated source archive.
-- Current branch is `arena/6d12f677-nngemes` (active), based on the user-specified
-  branch; last committed HEAD is `ce5582f`. No commit or push has been made in
-  this work turn.
+- Current branch is `arena/6d12f677-nngemes` (active). The baseline HEAD at the
+  start of the nickname/vehicle update was `8b87263`; this work turn adds the
+  SDK-backed nickname and guarded car paths described at the end of this file.
 
 ### Active profile and build separation
 - `nzl/include/nzl/game_profile.h` defines `kOwnerProfile26866884`, with the
@@ -668,9 +671,10 @@
   free hash slots. Host tests cover truncation, Count overflow, unknown profile,
   and heuristic offsets.
 - Overlay roster reads distinguish dictionary Count/capacity/active values from
-  class-filtered roster, valid positions and drawn entities. Optional feature
-  chains stay gated off. `nzl/CMakeLists.txt` links the profile-backed probe with
-  `nzl_core` and Windows `advapi32`/`bcrypt`.
+  class-filtered roster, valid positions and drawn entities. HP/armor/role/loot
+  chains stay gated off; the car path is now exact-profile and runtime-class gated
+  but live-unverified (see the later nickname/vehicle section). `nzl/CMakeLists.txt`
+  links the profile-backed probe with `nzl_core` and Windows `advapi32`/`bcrypt`.
 - `tools/NZL-BuildAll.ps1` now propagates non-zero build/test outcomes and logs
   per-stage exit codes; it does not delete an existing `driver.sys`. The driver
   batch script checks copy failure.
@@ -710,3 +714,59 @@
 - After a successful native build and tests, the next goal is a controlled live
   probe and then a current `data/paint/dict/roster/pos/draw` status line. The
   2–3-player/lag cause and all runtime compatibility remain unknown.
+
+## Nickname labels, vehicle snapshot, and build/package handoff (2026-11-27)
+- Confirmed why labels showed only `#<id>`: the render path only formatted
+  `RenderEnt.id`; there was no nickname lookup. The owner SDK dump at
+  `InsideExploit/rob-run-sdk@86baa8e`, folder `26866884`, connects
+  `BattleModel.CharacterSlotsModel +0x248` ->
+  `ClientCharacterSlotsModel._slotByEntityId +0x18` ->
+  `BattleCharacterSlotModel._data +0x10` ->
+  `BattleCharacterSlotData.Nickname +0x30`. The keyed Dictionary key is `+0x08`;
+  player entity IDs are matched to dictionary keys, then checked again against
+  `BattleCharacterSlotData.EntityId` (`IPrimitiveData<int>`, +0x20) and the
+  live `BattleCharacterModel.Id`. The primitive IntData/StringData and final
+  IL2CPP String class/length are checked before drawing UTF-16 labels. Runtime
+  class-name gates fail closed; missing/unreadable names fall back to `#id`.
+- The SDK only statically supports these offsets; no current-game read was made.
+  Nickname string-value offset uses the profile's `BasePrimitiveData<T>` value
+  slot +0x18 with class/length guards, but remains live-unverified.
+- Vehicle ESP previously returned an empty vector because the profile's
+  `cars_live_verified` was false. The profile now marks the 26866884 car layout
+  as SDK-supported, not live-verified. The snapshot still requires the exact
+  GameAssembly fingerprint and runtime `WorldEntitiesModel`, `CarModel`, and
+  `VehicleTransformModel` class checks, plus finite/bounded coordinates. The
+  menu defaults Vehicle ESP off; toggle `Loot` -> `Vehicle ESP` for rendering.
+  The transform output batch retains one slot per object (including rejected
+  transforms) so a skipped car cannot shift another car's position.
+- `nzl/include/nzl/chain.h`, `game_profile.h`, `src/overlay_windows.cpp`, and
+  `tests/test_profile.cpp` changed. Host C++20 builds of `test_chain`,
+  `test_pipeline`, `test_profile` all passed; profile tests cover the new
+  dictionary key, nickname chain, car offsets, and fail-closed missing string
+  offset. `git diff --check` passed. No Windows target build or live match was
+  possible here (no CMake, PowerShell, Windows SDK/MinGW cross compiler); the
+  current overlay source therefore still needs a native Windows compile.
+- Build/package semantics on Windows: `tools/NZL-BuildAll.ps1` builds driver,
+  user apps, and tests but does not load the driver. `tools/NZL-Package.ps1`
+  only embeds the already-built `driver.sys`, `kdmapper.exe`, and
+  `build-nzl\Release\nzl_overlay.exe` into `NZL-Studio.bat`; it does not
+  compile or run them. If `kdmapper.exe` is missing, `tools/NZL-GetKdmapper.ps1`
+  is the separate preparatory step. `NZL-START.bat` is a runtime launcher (it
+  may load/reuse the driver and runs the existing overlay EXE), not a build
+  script. Root `START.bat` launches the legacy Python `robrun.py`, unrelated to
+  the C++ overlay. Never package after a failed build because the packager only
+  checks that files exist and could embed stale binaries.
+- Exact Windows refresh from the repo root (does not run the driver):
+  `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-BuildAll.ps1`;
+  require exit 0 before continuing. If and only if `nzl\driver\kdmapper.exe`
+  is absent, run `powershell -NoProfile -ExecutionPolicy Bypass -File
+  .\tools\NZL-GetKdmapper.ps1` and require exit 0. Then run
+  `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-Package.ps1`
+  and require exit 0. The generated package is `NZL-Studio.bat`; creation does
+  not run it. For local in-tree use, BuildAll then `NZL-START.bat` would launch
+  the overlay, but do not execute that launcher while the driver stop below is
+  active.
+- No launcher BAT was run and no driver was loaded in this work. The earlier
+  two BSODs in the continuity record and explicit stop remain in force: build
+  and package validation do not authorize loading the driver or launching either
+  runtime BAT. Live-game behavior of names/cars remains unknown.

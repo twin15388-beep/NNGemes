@@ -25,12 +25,26 @@ int main() {
         "Dictionary fields are copied from the profile");
   check(offsets.array_length == 0x18 && offsets.array_data == 0x20,
         "IL2CPP array bounds/data are copied from the profile");
+  check(offsets.dict_key == 0x08 && offsets.dict_value == 0x10,
+        "Dictionary key/value layout is copied from the build profile");
+  check(offsets.nickname_offsets_configured &&
+            offsets.battle_model_character_slots == 0x248 &&
+            offsets.client_slots_by_entity_id == 0x18 &&
+            offsets.character_slot_data == 0x10 &&
+            offsets.character_slot_entity_id == 0x20 &&
+            offsets.character_slot_nickname == 0x30,
+        "nickname slot chain is populated from exact-build SDK offsets");
   check(offsets.ctm_x == 0x10 && offsets.ctm_y == 0x14 && offsets.ctm_z == 0x18,
         "CharacterTransformModel coordinates are build-profile values");
   check(!offsets.hp_live_verified && !offsets.armor_live_verified &&
             !offsets.role_live_verified && !offsets.loot_live_verified &&
-            !offsets.cars_live_verified,
-        "unverified optional features remain disabled");
+            offsets.cars_profile_supported && offsets.cars_dictionary == 0x60 &&
+            offsets.car_transform == 0xC0 && offsets.car_position == 0x38,
+        "unverified nested features stay disabled; car fields use exact-build profile gates");
+  GameProfile missing_nickname_value = profile;
+  missing_nickname_value.optional_features.primitive_value = {};
+  check(!nzl::Offsets(missing_nickname_value).nickname_offsets_configured,
+        "nickname chain fails closed if its primitive string value offset is absent");
 
   GameProfile unknown{};
   const nzl::Offsets unset(unknown);

@@ -36,6 +36,7 @@ struct Offsets {
   uint32_t array_data = 0;
   uint32_t dict_stride = 0;
   uint32_t dict_hash = 0;
+  uint32_t dict_key = 0;
   uint32_t dict_value = 0;
   uint32_t max_dict_entries = 0;
   uint32_t char_id = 0;
@@ -45,6 +46,12 @@ struct Offsets {
   uint32_t ctm_y = 0;
   uint32_t ctm_z = 0;
   uint32_t il2cpp_class_name = 0;
+  uint32_t battle_model_character_slots = 0;
+  uint32_t client_slots_by_entity_id = 0;
+  uint32_t character_slot_data = 0;
+  uint32_t character_slot_entity_id = 0;
+  uint32_t character_slot_nickname = 0;
+  bool nickname_offsets_configured = false;
   uint32_t cam_pos = 0;
   uint32_t cam_orientation = 0;
   uint32_t cam_look_at_orientation = 0;
@@ -75,7 +82,7 @@ struct Offsets {
   bool armor_live_verified = false;
   bool role_live_verified = false;
   bool loot_live_verified = false;
-  bool cars_live_verified = false;
+  bool cars_profile_supported = false;
   float head_height_m = 1.80f;
   float aim_head_height_m = 1.75f;
   float aim_chest_height_m = 1.30f;
@@ -101,6 +108,7 @@ struct Offsets {
         array_data(profile_offset32(p.dictionary.entries_array_data)),
         dict_stride(profile_offset32(p.dictionary.entry_stride)),
         dict_hash(profile_offset32(p.dictionary.entry_hash)),
+        dict_key(profile_offset32(p.dictionary.entry_key)),
         dict_value(profile_offset32(p.dictionary.entry_value)),
         max_dict_entries(p.dictionary.max_entries),
         char_id(profile_offset32(p.character.id)),
@@ -110,6 +118,19 @@ struct Offsets {
         ctm_y(profile_offset32(p.character.transform_y)),
         ctm_z(profile_offset32(p.character.transform_z)),
         il2cpp_class_name(profile_offset32(p.character.il2cpp_class_name)),
+        battle_model_character_slots(profile_offset32(p.nickname.battle_model_character_slots)),
+        client_slots_by_entity_id(profile_offset32(p.nickname.client_slots_by_entity_id)),
+        character_slot_data(profile_offset32(p.nickname.character_slot_data)),
+        character_slot_entity_id(profile_offset32(p.nickname.character_slot_entity_id)),
+        character_slot_nickname(profile_offset32(p.nickname.character_slot_nickname)),
+        nickname_offsets_configured(
+            game_profile::offset_usable32(p.nickname.battle_model_character_slots) &&
+            game_profile::offset_usable32(p.nickname.client_slots_by_entity_id) &&
+            game_profile::offset_usable32(p.nickname.character_slot_data) &&
+            game_profile::offset_usable32(p.nickname.character_slot_entity_id) &&
+            game_profile::offset_usable32(p.nickname.character_slot_nickname) &&
+            game_profile::offset_usable32(p.dictionary.entry_key) &&
+            game_profile::offset_usable32(p.optional_features.primitive_value)),
         cam_pos(profile_offset32(p.camera.position)),
         cam_orientation(profile_offset32(p.camera.orientation)),
         cam_look_at_orientation(profile_offset32(p.camera.look_at_orientation)),
@@ -142,7 +163,7 @@ struct Offsets {
         armor_live_verified(p.optional_features.armor_live_verified),
         role_live_verified(p.optional_features.role_live_verified),
         loot_live_verified(p.optional_features.loot_live_verified),
-        cars_live_verified(p.optional_features.cars_live_verified),
+        cars_profile_supported(p.optional_features.cars_profile_supported),
         head_height_m(p.head_height_m),
         aim_head_height_m(p.aim_head_height_m),
         aim_chest_height_m(p.aim_chest_height_m),

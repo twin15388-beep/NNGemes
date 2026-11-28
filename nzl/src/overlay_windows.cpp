@@ -5,8 +5,9 @@
 // INSERT toggles the menu; END exits.
 // Aim: hold RIGHT MOUSE, nearest alive head to crosshair inside Aim FOV.
 // Projection basis: profile-selected BattleCameraModel quaternion, with the
-// profile camera axes as a sanity/fallback path. Optional HP/armor/role chains
-// remain gated off until their layouts are confirmed against a live match.
+// profile camera axes as a sanity/fallback path. HP/armor/role/loot chains stay
+// disabled; exact-build car fields use runtime class and position sanity gates
+// but still need a live-match check.
 #ifndef _WIN32
 #error "Windows only"
 #endif
@@ -26,6 +27,8 @@
 #include <algorithm>
 #include <memory>
 #include <iterator>
+#include <optional>
+#include <unordered_map>
 #include <windowsx.h>
 #include "nzl/chain.h"
 #include "nzl/driver_memory.h"
@@ -67,20 +70,93 @@ static uint64_t find_gameassembly(DWORD pid) {
   }
   return 0;
 }
+static std::optional<std::string> read_klass_name(const nzl::IMemory& m,
+                                                   uint64_t klass,
+                                                   uint32_t name_offset) {
+  if (!nzl::plausible_ptr(klass) || klass > UINT64_MAX - name_offset)
+    return std::nullopt;
+  auto name_ptr = m.ptr(klass + name_offset);
+  if (!name_ptr || !nzl::plausible_ptr(*name_ptr)) return std::nullopt;
+  char name[64] = {};
+  if (!m.read(*name_ptr, name, sizeof(name) - 1)) return std::nullopt;
+  name[sizeof(name) - 1] = 0;
+  return std::string(name);
+}
 static bool klass_name_is(const nzl::IMemory& m, uint64_t klass,
                           uint32_t name_offset, const char* want) {
-  if (klass > UINT64_MAX - name_offset) return false;
-  auto name_ptr = m.ptr(klass + name_offset);
-  if (!name_ptr || !*name_ptr) return false;
-  char name[64] = {};
-  if (!m.read(*name_ptr, name, sizeof(name) - 1)) return false;
-  name[sizeof(name) - 1] = 0;
-  return std::strcmp(name, want) == 0;
+  auto name = read_klass_name(m, klass, name_offset);
+  return name && *name == want;
+}
+static bool object_klass_name_is(
+    const nzl::IMemory& m, uint64_t object, uint32_t name_offset,
+    const char* want,
+    std::unordered_map<uint64_t, std::string>* class_name_cache = nullptr) {
+  if (!nzl::plausible_ptr(object)) return false;
+  auto klass = m.ptr(object);
+  if (!klass || !nzl::plausible_ptr(*klass)) return false;
+  if (!class_name_cache) return klass_name_is(m, *klass, name_offset, want);
+  const auto found = class_name_cache->find(*klass);
+  if (found != class_name_cache->end()) return found->second == want;
+  auto name = read_klass_name(m, *klass, name_offset);
+  if (!name) return false;
+  class_name_cache->emplace(*klass, *name);
+  return *name == want;
+}
+static std::optional<std::wstring> read_string_data(
+    const nzl::IMemory& memory, uint64_t string_data,
+    const nzl::Offsets& offsets,
+    std::unordered_map<uint64_t, std::string>* class_name_cache = nullptr) {
+  constexpr uint32_t kMaxNicknameCodeUnits = 64;
+  constexpr uint32_t kIl2CppStringLengthOffset = 0x10;
+  constexpr uint32_t kIl2CppStringCharsOffset = 0x14;
+  if (!offsets.nickname_offsets_configured || !offsets.primitive_value)
+    return std::nullopt;
+  const bool is_string_data =
+      object_klass_name_is(memory, string_data, offsets.il2cpp_class_name,
+                           "StringData", class_name_cache) ||
+      object_klass_name_is(memory, string_data, offsets.il2cpp_class_name,
+                           "NicknameData", class_name_cache);
+  if (!is_string_data || string_data > UINT64_MAX - offsets.primitive_value)
+    return std::nullopt;
+
+  auto value = memory.ptr(string_data + offsets.primitive_value);
+  if (!value) return std::nullopt;
+  if (!*value) return std::wstring{};  // NullablePrimitiveData<string> value.
+  if (!nzl::plausible_ptr(*value) ||
+      !object_klass_name_is(memory, *value, offsets.il2cpp_class_name, "String",
+                            class_name_cache) ||
+      *value > UINT64_MAX - kIl2CppStringLengthOffset)
+    return std::nullopt;
+
+  auto length = memory.i32(*value + kIl2CppStringLengthOffset);
+  if (!length || *length < 0 ||
+      static_cast<uint32_t>(*length) > kMaxNicknameCodeUnits ||
+      *value > UINT64_MAX - kIl2CppStringCharsOffset)
+    return std::nullopt;
+
+  std::wstring nickname;
+  nickname.reserve(static_cast<size_t>(*length));
+  if (*length == 0) return nickname;
+  const size_t chars_bytes = static_cast<size_t>(*length) * sizeof(uint16_t);
+  const uint64_t chars_address = *value + kIl2CppStringCharsOffset;
+  if (chars_address > UINT64_MAX - chars_bytes) return std::nullopt;
+  uint16_t chars[kMaxNicknameCodeUnits]{};
+  if (!memory.read(chars_address, chars, chars_bytes))
+    return std::nullopt;
+  for (int32_t i = 0; i < *length; ++i) {
+    const uint16_t ch = chars[i];
+    // Do not let control characters or embedded NULs corrupt the GDI label.
+    nickname.push_back(ch < 0x20 || ch == 0x7f ? L' ' : static_cast<wchar_t>(ch));
+  }
+  if (nickname.find_first_not_of(L" \t\r\n") == std::wstring::npos)
+    return std::wstring{};
+  return nickname;
 }
 struct RenderEnt {
   float hx = 0, hy = 0, fx = 0, fy = 0; // head / feet screen
   float ax = 0, ay = 0;                 // aim point screen (selected bone)
   nzl::Vec3f pos{}; int id = 0; float dist = 0; bool dead = false;
+  std::wstring nickname;
   int hp = -1, maxhp = 0; bool armor = false;
   int role = -2; // PlayerRole via description Index: 0 Settler 1 Robber 2 Cop 3 Citizen 4 Prisoner (unverified mapping)
 };
@@ -95,6 +171,7 @@ struct Ctx {
   std::vector<RenderEnt> render;
   std::vector<LootEnt> loot;
   std::vector<CarEnt> cars;
+  std::unordered_map<uint64_t, std::string> class_name_cache;
   nzl::Vec3f cam_fwd{0, 0, 1}, cam_right{1, 0, 0}, radar_cam{};
   float fov = nzl::game_profile::kOwnerProfile26866884.assumed_vertical_fov_deg;
   int width = 1920, height = 1080;
@@ -230,11 +307,76 @@ static std::vector<uint64_t> dict_values(Ctx& c, uint64_t dict,
   if (stats) stats->class_matches = out.size();
   return out;
 }
+struct DictIntEntry { int32_t key = 0; uint64_t value = 0; };
+// Read the int-keyed slot dictionary without losing the Entry.key/value pairing.
+// This uses the same profile-bounded Dictionary layout as the player snapshot.
+static std::vector<DictIntEntry> dict_int_entries(Ctx& c, uint64_t dict) {
+  std::vector<DictIntEntry> out;
+  if (!c.mem || !c.off.profile_configured || !nzl::plausible_ptr(dict) ||
+      dict > UINT64_MAX - c.off.dict_entries ||
+      dict > UINT64_MAX - c.off.dict_count) return out;
+
+  auto entries = c.mem->ptr(dict + c.off.dict_entries);
+  auto count = c.mem->i32(dict + c.off.dict_count);
+  if (!entries || !nzl::plausible_ptr(*entries) || !count || *count < 0 ||
+      static_cast<uint32_t>(*count) > c.off.max_dict_entries ||
+      *entries > UINT64_MAX - c.off.array_length) return out;
+  auto capacity = c.mem->ptr(*entries + c.off.array_length);
+  if (!capacity || *capacity > c.off.max_dict_entries ||
+      static_cast<uint64_t>(*count) > *capacity || !c.off.dict_stride ||
+      *entries > UINT64_MAX - c.off.array_data) return out;
+
+  const uint64_t array_data = *entries + c.off.array_data;
+  // Keep 3 fields per dictionary entry within NaBatchRead's 64-item limit.
+  for (int base = 0; base < *count; base += 21) {
+    const int n = std::min(21, *count - base);
+    std::vector<NaItem> items;
+    std::vector<uint8_t> buffer(static_cast<size_t>(n) * 16, 0);
+    items.reserve(static_cast<size_t>(n) * 3);
+    bool addresses_ok = true;
+    for (int i = 0; i < n; ++i) {
+      const uint64_t index = static_cast<uint64_t>(base + i);
+      if (index > (UINT64_MAX - array_data) / c.off.dict_stride) {
+        addresses_ok = false;
+        break;
+      }
+      const uint64_t entry = array_data + index * c.off.dict_stride;
+      if (entry > UINT64_MAX - c.off.dict_hash ||
+          entry > UINT64_MAX - c.off.dict_key ||
+          entry > UINT64_MAX - c.off.dict_value) {
+        addresses_ok = false;
+        break;
+      }
+      items.push_back(NaItem{entry + c.off.dict_hash,
+                             static_cast<uint32_t>(i * 16), 4});
+      items.push_back(NaItem{entry + c.off.dict_key,
+                             static_cast<uint32_t>(i * 16 + 4), 4});
+      items.push_back(NaItem{entry + c.off.dict_value,
+                             static_cast<uint32_t>(i * 16 + 8), 8});
+    }
+    if (!addresses_ok ||
+        !NaBatchRead(c.pid, items.data(), static_cast<uint32_t>(items.size()),
+                     buffer.data(), static_cast<uint32_t>(buffer.size())))
+      continue;
+
+    for (int i = 0; i < n; ++i) {
+      int32_t hash = -1, key = 0;
+      uint64_t value = 0;
+      const uint8_t* row = buffer.data() + static_cast<size_t>(i) * 16;
+      std::memcpy(&hash, row, sizeof(hash));
+      std::memcpy(&key, row + 4, sizeof(key));
+      std::memcpy(&value, row + 8, sizeof(value));
+      if (hash >= 0 && nzl::plausible_ptr(value)) out.push_back({key, value});
+    }
+  }
+  return out;
+}
 struct BatchField { uint64_t address = 0; uint32_t size = 0; };
 struct PlayerCacheEntry {
   uint64_t character = 0, transform = 0, private_model = 0, armor_prim = 0, role_prim = 0;
   uint64_t hp_value_addr = 0, hp_max_addr = 0, armor_value_addr = 0, role_index_addr = 0;
   nzl::Vec3f pos{}; int32_t id = 0, hp = -1, maxhp = 0, role = -2; bool dead = false, armor = false;
+  std::wstring nickname;
 };
 struct PlayerCache {
   std::vector<PlayerCacheEntry> entries;
@@ -242,6 +384,7 @@ struct PlayerCache {
   size_t dictionary_active_values = 0, dictionary_read_failures = 0;
   bool dictionary_header_valid = false;
   ULONGLONG last_roster_check = 0, last_record_refresh = 0, last_meta_refresh = 0;
+  ULONGLONG last_nickname_refresh = 0;
 };
 // Read up to 64 independent fields per driver command, preserving one
 // output slot per request. Player pointer chains are refreshed separately
@@ -357,7 +500,9 @@ static bool refresh_player_records(Ctx& c, PlayerCache& cache) {
   };
   for (size_t i = 0; i < n; ++i) {
     auto& e = cache.entries[i];
-    e.id = static_cast<int32_t>(static_cast<uint32_t>(field_value(indices[i].id)));
+    const int32_t id = static_cast<int32_t>(static_cast<uint32_t>(field_value(indices[i].id)));
+    if (e.id != id) e.nickname.clear();
+    e.id = id;
     e.transform = field_value(indices[i].transform);
     e.dead = field_value(indices[i].dead) != 0;
     e.private_model = field_value(indices[i].private_model);
@@ -495,6 +640,57 @@ static void refresh_player_metadata(Ctx& c, PlayerCache& cache) {
              values[static_cast<size_t>(x.dead)] != 0;
   }
 }
+static void refresh_player_nicknames(Ctx& c, PlayerCache& cache) {
+  if (!c.mem || !c.off.profile_configured || !c.off.nickname_offsets_configured ||
+      !nzl::plausible_ptr(c.chain.battle_model) ||
+      c.chain.battle_model > UINT64_MAX - c.off.battle_model_character_slots ||
+      !object_klass_name_is(*c.mem, c.chain.battle_model, c.off.il2cpp_class_name,
+                            "BattleModel", &c.class_name_cache)) return;
+
+  auto slots = c.mem->ptr(c.chain.battle_model + c.off.battle_model_character_slots);
+  if (!slots || !nzl::plausible_ptr(*slots) ||
+      !object_klass_name_is(*c.mem, *slots, c.off.il2cpp_class_name,
+                            "ClientCharacterSlotsModel", &c.class_name_cache) ||
+      *slots > UINT64_MAX - c.off.client_slots_by_entity_id) return;
+  auto dict = c.mem->ptr(*slots + c.off.client_slots_by_entity_id);
+  if (!dict || !nzl::plausible_ptr(*dict)) return;
+
+  const auto entries = dict_int_entries(c, *dict);
+  if (entries.empty()) return;
+  std::unordered_map<int32_t, uint64_t> slot_by_entity_id;
+  slot_by_entity_id.reserve(entries.size());
+  for (const auto& entry : entries) slot_by_entity_id.emplace(entry.key, entry.value);
+
+  for (auto& player : cache.entries) {
+    if (player.id < 0 || !nzl::plausible_ptr(player.character) ||
+        player.character > UINT64_MAX - c.off.char_id) continue;
+    auto live_id = c.mem->i32(player.character + c.off.char_id);
+    if (!live_id || *live_id != player.id) continue;
+    const auto found = slot_by_entity_id.find(player.id);
+    if (found == slot_by_entity_id.end() ||
+        !object_klass_name_is(*c.mem, found->second, c.off.il2cpp_class_name,
+                              "BattleCharacterSlotModel", &c.class_name_cache) ||
+        found->second > UINT64_MAX - c.off.character_slot_data) continue;
+    auto data = c.mem->ptr(found->second + c.off.character_slot_data);
+    if (!data || !nzl::plausible_ptr(*data) ||
+        !object_klass_name_is(*c.mem, *data, c.off.il2cpp_class_name,
+                              "BattleCharacterSlotData", &c.class_name_cache) ||
+        *data > UINT64_MAX - c.off.character_slot_entity_id ||
+        *data > UINT64_MAX - c.off.character_slot_nickname) continue;
+    auto entity_id_data = c.mem->ptr(*data + c.off.character_slot_entity_id);
+    if (!entity_id_data || !nzl::plausible_ptr(*entity_id_data) ||
+        !object_klass_name_is(*c.mem, *entity_id_data, c.off.il2cpp_class_name,
+                              "IntData", &c.class_name_cache) ||
+        *entity_id_data > UINT64_MAX - c.off.primitive_value) continue;
+    auto slot_entity_id = c.mem->i32(*entity_id_data + c.off.primitive_value);
+    if (!slot_entity_id || *slot_entity_id != player.id) continue;
+    auto nickname_data = c.mem->ptr(*data + c.off.character_slot_nickname);
+    if (!nickname_data || !nzl::plausible_ptr(*nickname_data)) continue;
+    auto nickname = read_string_data(*c.mem, *nickname_data, c.off,
+                                     &c.class_name_cache);
+    if (nickname) player.nickname = std::move(*nickname);
+  }
+}
 static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& local,
                                                       PlayerCache& cache, ULONGLONG now) {
   if (!cache.last_roster_check || now - cache.last_roster_check >= 1000) {
@@ -510,6 +706,7 @@ static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& l
       cache.entries.clear(); cache.entries.reserve(chars.size());
       for (uint64_t ch : chars) { PlayerCacheEntry e; e.character = ch; cache.entries.push_back(e); }
       cache.last_record_refresh = 0;
+      cache.last_nickname_refresh = 0;
     }
     cache.last_roster_check = now;
   }
@@ -518,6 +715,10 @@ static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& l
       refresh_player_records(c, cache)) {
     cache.last_record_refresh = now;
     cache.last_meta_refresh = 0;
+  }
+  if (!cache.last_nickname_refresh || now - cache.last_nickname_refresh >= 1000) {
+    refresh_player_nicknames(c, cache);
+    cache.last_nickname_refresh = now;
   }
   refresh_player_positions(c, cache);
   if (!cache.last_meta_refresh || now - cache.last_meta_refresh >= 250) {
@@ -562,14 +763,28 @@ static std::vector<LootEnt> snapshot_loot(Ctx& c, const nzl::Vec3f& local) {
   }
   return out;
 }
+// The car chain is enabled only for the matching build profile. The SDK offsets
+// are not live-verified; reject objects unless both model classes and resulting
+// world coordinates pass runtime checks.
 static std::vector<CarEnt> snapshot_cars(Ctx& c, const nzl::Vec3f& local) {
   std::vector<CarEnt> out;
-  if (!c.off.cars_live_verified || !c.mem || !c.off.cars_dictionary ||
-      !c.off.car_transform || c.chain.world_entities > UINT64_MAX - c.off.cars_dictionary)
+  if (!c.off.cars_profile_supported || !c.mem || !c.off.cars_dictionary ||
+      !c.off.car_transform || !c.off.car_position ||
+      !nzl::plausible_ptr(c.chain.world_entities) ||
+      c.chain.world_entities > UINT64_MAX - c.off.cars_dictionary ||
+      !object_klass_name_is(*c.mem, c.chain.world_entities, c.off.il2cpp_class_name,
+                            "WorldEntitiesModel", &c.class_name_cache))
     return out;
   auto dict = c.mem->ptr(c.chain.world_entities + c.off.cars_dictionary);
   if (!dict || !nzl::plausible_ptr(*dict)) return out;
-  const auto objects = dict_values(c, *dict);
+  const auto all_objects = dict_values(c, *dict);
+  std::vector<uint64_t> objects;
+  objects.reserve(all_objects.size());
+  for (uint64_t object : all_objects) {
+    if (object_klass_name_is(*c.mem, object, c.off.il2cpp_class_name, "CarModel",
+                             &c.class_name_cache))
+      objects.push_back(object);
+  }
   const size_t count = objects.size();
   std::vector<uint64_t> transforms(count, 0);
   std::vector<nzl::Vec3f> positions(count, nzl::Vec3f{});
@@ -587,8 +802,13 @@ static std::vector<CarEnt> snapshot_cars(Ctx& c, const nzl::Vec3f& local) {
     }
     if (!NaBatchRead(c.pid, transform_items.data(), n, transform_buffer.data(),
                      static_cast<uint32_t>(transform_buffer.size()))) continue;
-    for (uint32_t i = 0; i < n; ++i)
-      std::memcpy(&transforms[base + i], transform_buffer.data() + i * 8, 8);
+    for (uint32_t i = 0; i < n; ++i) {
+      uint64_t& transform = transforms[base + i];
+      std::memcpy(&transform, transform_buffer.data() + i * 8, 8);
+      if (!object_klass_name_is(*c.mem, transform, c.off.il2cpp_class_name,
+                                "VehicleTransformModel", &c.class_name_cache))
+        transform = 0;
+    }
 
     std::vector<NaItem> position_items;
     std::vector<uint8_t> position_buffer(static_cast<size_t>(n) * 12, 0);
@@ -596,9 +816,8 @@ static std::vector<CarEnt> snapshot_cars(Ctx& c, const nzl::Vec3f& local) {
       const uint64_t transform = transforms[base + i];
       const bool valid = nzl::plausible_ptr(transform) &&
                          transform <= UINT64_MAX - c.off.car_position;
-      if (valid)
-        position_items.push_back(NaItem{transform + c.off.car_position,
-                                        i * 12, 12});
+      position_items.push_back(NaItem{valid ? transform + c.off.car_position : 0,
+                                      i * 12, valid ? 12u : 0u});
     }
     if (!position_items.empty() &&
         NaBatchRead(c.pid, position_items.data(),
@@ -613,9 +832,12 @@ static std::vector<CarEnt> snapshot_cars(Ctx& c, const nzl::Vec3f& local) {
     }
   }
   for (const auto& position : positions) {
+    constexpr float kMaxWorldCoordinate = 1.0e6f;
     if ((position.x == 0 && position.y == 0 && position.z == 0) ||
         !std::isfinite(position.x) || !std::isfinite(position.y) ||
-        !std::isfinite(position.z)) continue;
+        !std::isfinite(position.z) || std::fabs(position.x) > kMaxWorldCoordinate ||
+        std::fabs(position.y) > kMaxWorldCoordinate ||
+        std::fabs(position.z) > kMaxWorldCoordinate) continue;
     const float dx = position.x - local.x;
     const float dy = position.y - local.y;
     const float dz = position.z - local.z;
@@ -1149,11 +1371,24 @@ static LRESULT CALLBACK overlay_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
           }
           int ty = (int)e.hy - 15;
           if (g_ctx->show_text) {
-            char text[128];
             const char* role = (g_ctx->show_roles && e.role >= 0 && e.role <= 4) ? kRoleNames[e.role] : "";
-            std::snprintf(text, sizeof(text), "#%d %.0fm%s%s%s", e.id, e.dist, role[0] ? " " : "", role,
-                          e.armor && g_ctx->show_armor ? " [ARM]" : "");
-            TextOutA(dc, (int)(e.hx - wid * 0.5f), ty, text, (int)std::strlen(text));
+            std::wstring text = e.nickname;
+            if (text.empty()) {
+              text = L"#" + std::to_wstring(e.id);
+            } else {
+              text += L"  #" + std::to_wstring(e.id);
+            }
+            text += L"  " + std::to_wstring(static_cast<int>(std::lround(e.dist))) + L"m";
+            if (role[0]) {
+              text.push_back(L' ');
+              for (const char* ch = role; *ch; ++ch) text.push_back(static_cast<wchar_t>(*ch));
+            }
+            if (e.armor && g_ctx->show_armor) text += L" [ARM]";
+            SIZE text_size{};
+            GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()),
+                                 &text_size);
+            TextOutW(dc, (int)e.hx - text_size.cx / 2, ty, text.c_str(),
+                     static_cast<int>(text.size()));
             ty -= 13;
           }
           if (g_ctx->show_hp && e.hp >= 0 && e.maxhp > 0) {
@@ -1693,6 +1928,9 @@ static void esp_worker(Ctx* ui) {
         if (work.visible_only && (hx < 0 || hx > view.width || hy < 0 || hy > view.height)) { ++culled_edge; continue; }
         RenderEnt e; e.hx = hx; e.hy = hy; e.fx = fx; e.fy = fy; e.ax = ax; e.ay = ay;
         e.pos = p.pos; e.id = p.id; e.dist = p.dist; e.dead = p.dead;
+        for (const auto& cached : player_cache.entries) {
+          if (cached.character == p.addr) { e.nickname = cached.nickname; break; }
+        }
         e.hp = p.hp; e.maxhp = p.maxhp; e.armor = p.armor; e.role = p.role;
         work.render.push_back(e);
       }
