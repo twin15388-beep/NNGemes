@@ -206,14 +206,36 @@ def encoding_problems(path):
     return problems
 
 
+def bat_line_endings(path):
+    """cmd.exe splits a batch file on \\n and strips ONE \\r. A file with
+    \\r\\r\\n therefore leaves a stray \\r inside every line - 'set "ROOT=...\\r"'
+    becomes an unusable path. NZL.bat was written that way on 2026-11-28 and
+    would have failed on every command."""
+    raw = open(path, "rb").read()
+    problems = []
+    if b"\r\r" in raw:
+        problems.append("%s: doubled CR before LF (%d lines) - cmd.exe keeps a "
+                        "trailing \\r inside each line" % (path, raw.count(b"\r\r\n")))
+    bare = raw.count(b"\n") - raw.count(b"\r\n")
+    if bare:
+        problems.append("%s: %d LF-only line endings - .bat must be CRLF "
+                        "(labels and goto break otherwise)" % (path, bare))
+    return problems
+
+
 def main(argv):
     targets = argv[1:]
     if not targets:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         targets = sorted(glob.glob(os.path.join(root, 'tools', '*.ps1')))
+        targets += sorted(glob.glob(os.path.join(root, '*.bat')))
+        targets += sorted(glob.glob(os.path.join(root, 'nzl', 'driver', '*.bat')))
     failures = 0
     for path in targets:
-        problems = encoding_problems(path) + check_file(path)
+        if path.lower().endswith(".bat"):
+            problems = bat_line_endings(path)
+        else:
+            problems = encoding_problems(path) + check_file(path)
         if problems:
             failures += 1
             for problem in problems:

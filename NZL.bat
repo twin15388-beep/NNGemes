@@ -3,13 +3,16 @@ rem ===========================================================================
 rem  NZL Studio - dispatcher. Works from ANY directory, including the
 rem  C:\Windows\system32 that a fresh elevated PowerShell starts in.
 rem
-rem  Usage (full path, so the current directory does not matter):
-rem    "D:\NZL Rob run\NZL.bat" overlay
-rem    "D:\NZL Rob run\NZL.bat" probe
-rem    "D:\NZL Rob run\NZL.bat" report
-rem    "D:\NZL Rob run\NZL.bat" build
-rem    "D:\NZL Rob run\NZL.bat" load
-rem    "D:\NZL Rob run\NZL.bat" crash
+rem  Usage, PowerShell, from the project folder:
+rem    cd "D:\NZL Rob run"
+rem    .\NZL.bat overlay      ESP (INSERT = menu, END = exit)
+rem    .\NZL.bat probe        transport + chain, game must be in a match
+rem    .\NZL.bat report       full report, zipped, copied to Dropbox
+rem    .\NZL.bat build        driver + apps + host tests
+rem    .\NZL.bat load         map the driver, before starting the game
+rem    .\NZL.bat crash        BSOD dumps and bugcheck codes
+rem  From any folder: PowerShell needs '& "D:\NZL Rob run\NZL.bat" overlay',
+rem  cmd.exe is happy with the bare quoted path.
 rem
 rem  Tools: overlay probe report build load crash dump package collect analyze
 rem  Everything runs as tools\NZL-<name>.ps1 next to this file. Extra
@@ -34,17 +37,26 @@ cd /d "%ROOT%"
 if /i "%TOOL%"=="report" if "%2"=="" (
     echo [NZL] report with -Zip -CopyToDropbox
     powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -Zip -CopyToDropbox
-    exit /b %ERRORLEVEL%
+    set "RC=%ERRORLEVEL%"
+    if not "%RC%"=="0" pause
+    exit /b %RC%
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %2 %3 %4 %5 %6
-exit /b %ERRORLEVEL%
+set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" (
+    echo.
+    echo [NZL] exit %RC% - read the message above.
+    pause
+)
+exit /b %RC%
 
 :unknown
 echo [NZL] No such tool: %TOOL%
 echo [NZL] Expected file: %PS1%
 echo [NZL] Available:
 for %%F in ("%ROOT%tools\NZL-*.ps1") do echo    %%~nF
+pause
 exit /b 2
 
 :usage
@@ -58,6 +70,13 @@ echo   NZL.bat load      map the driver     (before starting the game)
 echo   NZL.bat crash     collect BSOD dumps and bugcheck codes
 echo   NZL.bat dump      switch to kernel memory dumps
 echo.
-echo   Full path works from any directory:
+echo   PowerShell from the project folder (no operator needed):
+echo     .\NZL.bat overlay
+echo   PowerShell with a full path (the call operator IS needed):
+echo     ^& "%ROOT%NZL.bat" overlay
+echo   cmd.exe with a full path (quotes are enough):
 echo     "%ROOT%NZL.bat" overlay
+echo.
+rem Double-clicked with no tool: keep the window open so the list is readable.
+pause
 exit /b 1
