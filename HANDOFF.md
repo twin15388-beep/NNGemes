@@ -805,15 +805,54 @@
   `arena/6d12f677-nngemes`, HEAD `39682f7`; the raw snapshot changes belong to
   this same branch. No runtime BAT was run and no driver was loaded. Existing
   stop about the two prior BSODs remains unchanged.
-- Next safe verification is Windows `git pull --ff-only origin
-  arena/6d12f677-nngemes`, then
-  `powershell -NoProfile -ExecutionPolicy Bypass -File
-  .\tools\NZL-BuildAll.ps1` and capture the exit/output. If and only if
-  `nzl\driver\kdmapper.exe` is absent, run
-  `powershell -NoProfile -ExecutionPolicy Bypass -File
-  .\tools\NZL-GetKdmapper.ps1`; package only after BuildAll succeeds via
-  `powershell -NoProfile -ExecutionPolicy Bypass -File
-  .\tools\NZL-Package.ps1`. Do not run `NZL-START.bat`, `NZL-Studio.bat`, or
-  load the driver while the existing BSOD stop is active. Once runtime testing
-  is authorized and safe, enable `Visuals -> Skeleton (approx.)` and report the
-  `SKEL raw` status; only then continue to world-space conversion.
+- Owner-reported Windows validation completed after the pull: `git pull
+  --ff-only origin arena/6d12f677-nngemes` returned `Already up to date`.
+  `NZL-BuildAll.ps1` exited 0 with MSVC 14.51.36231 / Windows SDK 10.0.26100.0;
+  it compiled `driver.sys` but explicitly did not load it, built the x64 NZL
+  applications, and passed all four CTest suites (`nzl_tests`, pipeline,
+  profile, skeleton). `NZL-Package.ps1` exited 0 and generated a fresh
+  `NZL-Studio.bat` (package ID
+  `63f9448734a579a296a5c3ce50e0456860d07c2fdd8fd8ae1a5b7d4370dfec62`).
+  `kdmapper.exe` was already present; `NZL-GetKdmapper.ps1` confirmed it and
+  made no change. Packaging did not launch the BAT.
+- CrashInfo was captured 2026-11-28 after the 2026-11-27 crashes, so Windows
+  has rebooted since the manual-map session; the mapped driver should now be
+  gone. Do not manually unload or load it again.
+- Owner supplied analyses for all listed triage minidumps plus the latest
+  `MEMORY.DMP`. Three recent BugChecks were logged: `0x1E` at 21:56 and 22:18,
+  and `0x50` at 23:14; an older minidump is from 18:03.
+- `112726-11031-01.dmp` (`0x1E`) and `112726-11078-01.dmp` (`0x1E`) both show
+  `STATUS_ACCESS_VIOLATION` with exception parameter 1 = 1 (write) and user VAs
+  `0x14dbca20034` / `0x2010bc60034`, while `PROCESS_NAME` is `ROB RUN.exe`.
+  With packed `NA_SHM`, `region` starts at offset `0x34`; both faults land
+  exactly at the shared `NaRegion` output field. The first stack collapses into
+  `KiDoubleFaultAbort/RtlUnwind`; the second shows unknown instruction address
+  `ffff980b`a098a998` after `KiPageFault`. `112726-11109-01.dmp` (18:03) has the
+  same AV/write pattern to `0x20718900454`, exactly the packed `NA_SHM.data`
+  offset, but a zeroed stack and `ANALYSIS_INCONCLUSIVE`. The first two dumps
+  strongly corroborate the `NaRegion` wrong-process-context bug; the third
+  suggests another shared output write but cannot identify its caller. Current
+  `NaRegion` code writes shared output only after detaching from the target.
+- The latest `0x50` analysis reports `PAGE_FAULT_IN_NONPAGED_AREA`, process
+  `ROB RUN.exe`, and a read from kernel VA `fffffede9deede7f` in
+  `nt!memcpy <- MiCopyVirtualMemory <- MmCopyVirtualMemory`, returning to
+  unknown address `ffff8503`7b01378e. This strongly suggests an invalid source
+  VA supplied by manually mapped kernel code, but WinDbg cannot prove the exact
+  driver function because it is not listed as a named module. The dump log
+  reports capture reached 75%; treat the stack as limited evidence.
+- Static audit: `NaRead` already rejects kernel-range input addresses, but
+  `NaBatch` previously passed shared-memory `NA_ITEM.address` directly to
+  `MmCopyVirtualMemory(..., KernelMode, ...)`. Source was hardened to snapshot
+  and validate all batch items/spans before copying; `NaBase` now checks the
+  PEB range as well. This is a plausible mitigation, not a verified root-cause
+  fix until the updated driver is natively built and reviewed.
+- `NZL-Package.ps1` now adds `CrashDumpEnabled=2` preflight before fresh
+  `kdmapper` mapping. The existing Windows BAT (package ID
+  `63f9448734a579a296a5c3ce50e0456860d07c2fdd8fd8ae1a5b7d4370dfec62`) predates
+  that guard; do not run it.
+- Four host C++20 suites and skeleton ASan/UBSan passed; static guard/order and
+  whitespace checks passed. Latest driver/package edits still need owner-side
+  MSVC+WDK `NZL-BuildAll.ps1` and `NZL-Package.ps1`; neither should be run until
+  the source update is synchronized to Windows. No runtime validation. Keep
+  stop active: do not launch either BAT, ROB RUN, or the driver. Live skeleton
+  layout, hierarchy, and world-space conversion remain unverified.

@@ -99,6 +99,13 @@ if %errorlevel% equ 0 (
     pause
     exit /b
 )
+powershell -NoProfile -Command "$dump=(Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl' -Name CrashDumpEnabled -ErrorAction SilentlyContinue).CrashDumpEnabled; if ($dump -ne 2) { exit 1 }"
+if errorlevel 1 (
+    echo [NZL] Refusing to load driver: CrashDumpEnabled must be 2 (kernel dump).
+    echo [NZL] Enable the kernel dump and reboot before any future driver test.
+    pause
+    exit /b 9
+)
 echo [NZL] Loading driver...
 "%NZLDIR%\kdmapper.exe" "%NZLDIR%\driver.sys"
 timeout /t 2 /nobreak >nul

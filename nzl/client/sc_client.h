@@ -66,7 +66,8 @@ bool   NaQueryRegion(UINT32 pid, UINT64 addr, NaRegion* out);
 // Batch: up to NA_BATCH_MAX items read by the driver in ONE command
 // (one worker wake instead of one per read - the per-command poll tick
 // dominates small reads). Items carry (address, offset-in-out, size);
-// failed items come back zeroed. Total bytes must be <= NA_MAX_XFER.
+// invalid item bounds/source addresses reject the whole request, while a
+// valid but unreadable source remains zeroed. Total bytes <= NA_MAX_XFER.
 bool   NaBatchRead(UINT32 pid, NaItem* items, UINT32 count, void* out, UINT32 total);
 // Kernel-side qword scan (NA_CMD_SCAN): finds up to maxcand candidate
 // addresses holding `pattern` in committed MEM_PRIVATE readable regions

@@ -110,7 +110,8 @@ static NTSTATUS NaBase(ULONG pid, PULONGLONG out)
     if (!NT_SUCCESS(st)) return st;
     PUCHAR peb = (PUCHAR)PsGetProcessPeb(proc);
     ULONGLONG val = 0;
-    if (peb) {
+    if (peb && NaUserRange((ULONGLONG)(ULONG_PTR)peb,
+                           0x10 + sizeof(val))) {
         SIZE_T copied = 0;
         st = MmCopyVirtualMemory(proc, peb + 0x10, PsGetCurrentProcess(),
                                  &val, sizeof(val), KernelMode, &copied);
@@ -272,25 +273,42 @@ static NTSTATUS NaScan(PNA_SHM shm, PULONGLONG next_out, PULONG found_out)
 
 static NTSTATUS NaBatch(PNA_SHM shm)
 {
-    if (!shm->count || shm->count > NA_BATCH_MAX ||
-        !shm->total || shm->total > NA_MAX_XFER)
+    // Snapshot the request before validation so a concurrent writer cannot
+    // change a checked source address before MmCopyVirtualMemory consumes it.
+    ULONG count = shm->count;
+    ULONG total = shm->total;
+    ULONG pid = shm->pid;
+    if (!count || count > NA_BATCH_MAX || !total || total > NA_MAX_XFER)
         return STATUS_INVALID_PARAMETER;
-    PVOID tmp = ExAllocatePoolWithTag(NonPagedPool, shm->total, POOL_TAG);
+    NA_ITEM items[NA_BATCH_MAX];
+    RtlCopyMemory(items, shm->items, count * sizeof(NA_ITEM));
+
+    // Validate the whole batch before making any process-memory copies.
+    // With PreviousMode=KernelMode, MmCopyVirtualMemory does not probe an
+    // invalid kernel-range source VA; reject malformed user-writable spans.
+    for (ULONG i = 0; i < count; i++) {
+        const NA_ITEM* it = &items[i];
+        if (!it->size || (ULONGLONG)it->offset > total ||
+            (ULONGLONG)it->size > (ULONGLONG)total - it->offset ||
+            !NaUserRange(it->address, it->size))
+            return STATUS_INVALID_PARAMETER;
+    }
+
+    PVOID tmp = ExAllocatePoolWithTag(NonPagedPool, total, POOL_TAG);
     if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
-    RtlZeroMemory(tmp, shm->total);
+    RtlZeroMemory(tmp, total);
     PEPROCESS proc;
-    NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)shm->pid, &proc);
+    NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &proc);
     if (!NT_SUCCESS(st)) { ExFreePoolWithTag(tmp, POOL_TAG); return st; }
-    for (ULONG i = 0; i < shm->count; i++) {
-        PNA_ITEM it = &shm->items[i];
-        if (!it->size || (ULONGLONG)it->offset + it->size > shm->total) continue;
+    for (ULONG i = 0; i < count; i++) {
+        const NA_ITEM* it = &items[i];
         SIZE_T copied = 0;
         MmCopyVirtualMemory(proc, (PVOID)(ULONG_PTR)it->address, PsGetCurrentProcess(),
                             (PUCHAR)tmp + it->offset, it->size, KernelMode, &copied);
-        // failed items stay zeroed (matches previous behaviour)
+        // Unreadable but structurally valid regions stay zeroed.
     }
     ObDereferenceObject(proc);
-    RtlCopyMemory(shm->data, tmp, shm->total);
+    RtlCopyMemory(shm->data, tmp, total);
     ExFreePoolWithTag(tmp, POOL_TAG);
     return STATUS_SUCCESS;
 }

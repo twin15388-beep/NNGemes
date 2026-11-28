@@ -140,25 +140,18 @@ CULLED dead/far/proj/edge 0/0/23/0 | RD-FAIL 0 | CAM-FAIL 0/0/0 | FOV 90 VIEW 19
 
 - Direct host g++ C++20 builds/runs of `test_chain`, `test_pipeline`, `test_profile`, and the new `test_skeleton` all passed. These cover the bounded raw skeleton parser with synthetic FakeMemory data; they do not validate target-game values.
 - Python: `py_compile robrun.py` и `unittest discover -s tests -v`; 12 tests прошли ранее.
-- Earlier x64 Windows GNU cross-build covered the then-current overlay before this skeleton diagnostic change. The current `overlay_windows.cpp` changes have not been Windows-compiled; this sandbox currently has no CMake/MSVC/MinGW/Zig toolchain.
 
-**Не проверено здесь:** нативная MSVC+WDK сборка и запуск PowerShell workflow; сборка kernel driver; one-file `.bat`; выполнение EXE в Windows; live match и актуальная полнота player render; реальные data/paint rates в игре; точность aim/HP/armor/roles/loot/cars. Runtime-причина 2–3 видимых игроков не установлена.
+**На Windows владельца проверено:**
 
-## Следующий шаг
+- Owner-reported Windows validation before the latest safety edits: `NZL-BuildAll.ps1` completed with exit 0 using MSVC 14.51.36231 / Windows SDK 10.0.26100.0; it built `driver.sys` without loading it, built the x64 apps, and passed all four CTest suites. `NZL-Package.ps1` exited 0 and generated package ID `63f9448734a579a296a5c3ce50e0456860d07c2fdd8fd8ae1a5b7d4370dfec62`. That BAT predates the current package safety guard and must not be run.
+- Latest source-only driver/package safety edits have not yet been verified by Windows BuildAll or repackaging. This sandbox itself still lacks the Windows toolchain.
 
-1. После синхронизации текущей ветки выполнить из корня проекта на Windows:
-   `git pull --ff-only origin arena/6d12f677-nngemes`
-2. Запустить только build+tests (это не загружает драйвер):
-   `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-BuildAll.ps1`
-   Требовать exit 0 и строку `nzl_overlay.exe OK`. Если и только если
-   `nzl\driver\kdmapper.exe` отсутствует, отдельно выполнить
-   `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-GetKdmapper.ps1`.
-   Упаковывать только после успешного BuildAll:
-   `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-Package.ps1`.
-3. **Не запускать** `NZL-START.bat`/`NZL-Studio.bat` и не загружать драйвер:
-   в handoff остаётся stop из-за двух прежних BSOD. Build/package сами по себе
-   не разрешают runtime.
-4. Когда безопасный live-тест будет отдельно разрешён, включить
-   `Visuals -> Skeleton (approx.)` и прислать полную строку статуса с
-   `SKEL raw ...`. Она подтвердит или отвергнет чтение сырого SkeletonModel;
-   только после этого разбирать hierarchy и world-space преобразование.
+**Не проверено:** выполнение EXE в игре; live match и актуальная полнота player render; реальные data/paint rates в игре; live-раскладка `_bonesData`, hierarchy и model-to-world преобразование; точность aim/HP/armor/roles/loot/cars. Runtime-причина 2–3 видимых игроков не установлена.
+
+## Статус и следующий шаг
+
+Windows `BuildAll` и упаковка прошли до последних изменений; повторный `BuildAll` и repackage ещё нужны после синхронизации исправлений. Старый BAT (package ID `63f9448734a579a296a5c3ce50e0456860d07c2fdd8fd8ae1a5b7d4370dfec62`) не содержит новую preflight-проверку и запускать его нельзя.
+
+Live-проверка скелета не выполнена. `crash_info-5.txt` показывает три BugCheck-события 2026-11-27: два `0x1E` (21:56 и 22:18) и один `0x50` (23:14); minidump-список включает ещё файл за 18:03. Все три предоставленных анализа `0x1E` — `STATUS_ACCESS_VIOLATION` при записи в user VA (`0x14dbca20034`, `0x2010bc60034`, `0x20718900454`) во время `ROB RUN.exe`. При packed layout `NA_SHM` первые два адреса — это начало `region` (`+0x34`), что сильно подтверждает ошибку `NaRegion` с записью в shared output при attach к другому процессу; такой write в текущем коде делается уже после detach. Третий адрес — начало `NA_SHM.data` (`+0x454`), но его triage stack обнулён. Анализ последнего `0x50` показывает чтение kernel VA `fffffede9deede7f` в `nt!memcpy <- MiCopyVirtualMemory <- MmCopyVirtualMemory`, возврат в неизвестный модуль `ffff8503`7b01378e`; это согласуется с неверным source VA в kernel-driver copy path. Это не ошибка декодирования костей; вручную отображённый модуль не идентифицирован WinDbg, а dump указал на 75% завершения.
+
+В source workspace `NaBatch` теперь snapshot-ит запрос и проверяет все адреса/границы до `MmCopyVirtualMemory`; `NaBase` также проверяет диапазон PEB перед копированием. Генератор нового пакета отказывает в fresh mapping, если `CrashDumpEnabled != 2`. Эти kernel-driver/package изменения ещё не проверены нативной Windows-сборкой и не входят в уже созданный BAT. Host-тесты и статические проверки прошли, но runtime остаётся остановлен после нескольких BSOD: не запускать ни старый, ни новый BAT, игру или драйвер. После синхронизации исходников запустить `NZL-BuildAll.ps1`, затем `NZL-Package.ps1` и прислать выводы — пакет не запускать. Live Skeleton `SKEL raw`, hierarchy и world-space преобразование остаются неподтверждёнными.
