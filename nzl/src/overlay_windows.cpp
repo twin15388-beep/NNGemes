@@ -342,9 +342,13 @@ static std::vector<DictIntEntry> dict_int_entries(Ctx& c, uint64_t dict) {
       *entries > UINT64_MAX - c.off.array_data) return out;
 
   const uint64_t array_data = *entries + c.off.array_data;
+  // Same Count-vs-capacity rule as dict_values: the int-keyed slot dictionary
+  // that carries nicknames keeps its live entries anywhere inside the entries
+  // array, so scanning *count slots loses the slots that sit past it.
+  const int span = static_cast<int>(*capacity);
   // Keep 3 fields per dictionary entry within NaBatchRead's 64-item limit.
-  for (int base = 0; base < *count; base += 21) {
-    const int n = std::min(21, *count - base);
+  for (int base = 0; base < span; base += 21) {
+    const int n = std::min(21, span - base);
     std::vector<NaItem> items;
     std::vector<uint8_t> buffer(static_cast<size_t>(n) * 16, 0);
     items.reserve(static_cast<size_t>(n) * 3);
@@ -387,6 +391,29 @@ static std::vector<DictIntEntry> dict_int_entries(Ctx& c, uint64_t dict) {
   return out;
 }
 struct BatchField { uint64_t address = 0; uint32_t size = 0; };
+// The nickname chain is six gates deep and used to fail completely silently,
+// which is why "нет имён" survived four reports: a wrong slot offset and an
+// empty store looked identical. Every exit names itself now.
+enum class NameStage {
+  Disabled, BattleModel, Slots, Dictionary, Entries, SlotClass, SlotData,
+  DataClass, EntityId, IdMismatch, Nickname, Ok
+};
+static const char* name_stage_text(NameStage stage) {
+  switch (stage) {
+    case NameStage::Ok: return "OK";
+    case NameStage::BattleModel: return "battle-model-gate";
+    case NameStage::Slots: return "character-slots-gate";
+    case NameStage::Dictionary: return "slot-dictionary-gate";
+    case NameStage::Entries: return "slot-dictionary-empty";
+    case NameStage::SlotClass: return "slot-class-gate";
+    case NameStage::SlotData: return "slot-data-gate";
+    case NameStage::DataClass: return "slot-data-class-gate";
+    case NameStage::EntityId: return "entity-id-gate";
+    case NameStage::IdMismatch: return "entity-id-mismatch";
+    case NameStage::Nickname: return "nickname-object-gate";
+    default: return "offsets-unconfigured";
+  }
+}
 struct PlayerCacheEntry {
   uint64_t character = 0, transform = 0, private_model = 0, armor_prim = 0, role_prim = 0;
   uint64_t hp_value_addr = 0, hp_max_addr = 0, armor_value_addr = 0, role_index_addr = 0;
@@ -398,6 +425,9 @@ struct PlayerCacheEntry {
 };
 struct PlayerCache {
   std::vector<PlayerCacheEntry> entries;
+  size_t transform_repoints = 0, transform_refresh_failures = 0;
+  NameStage name_stage = NameStage::Disabled;
+  size_t transform_repoints = 0, transform_refresh_failures = 0;
   uint32_t dictionary_count = 0, dictionary_capacity = 0;
   size_t dictionary_active_values = 0, dictionary_read_failures = 0;
   bool dictionary_header_valid = false;
@@ -591,6 +621,44 @@ static bool refresh_player_records(Ctx& c, PlayerCache& cache) {
   }
   return true;
 }
+// Reading DoTransform through a pointer that was cached up to three seconds
+// ago is what makes boxes sit where a player used to be and then snap: the
+// game repoints Transform when objects are pooled or a character re-enters the
+// world. Refresh the pointer in the same frame that it is used, in one extra
+// batch command, so a position is never read through a stale pointer.
+static void refresh_transform_pointers(Ctx& c, PlayerCache& cache) {
+  const size_t count = cache.entries.size();
+  if (count == 0 || c.off.char_transform == 0) return;
+  constexpr size_t kPointerChunk = 60;
+  for (size_t base = 0; base < count; base += kPointerChunk) {
+    const uint32_t n = static_cast<uint32_t>(
+        std::min(kPointerChunk, count - base));
+    std::vector<NaItem> items;
+    items.reserve(n);
+    std::vector<uint8_t> buffer(static_cast<size_t>(n) * 8, 0);
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint64_t character = cache.entries[base + i].character;
+      const bool valid = nzl::plausible_ptr(character) &&
+                         character <= UINT64_MAX - c.off.char_transform;
+      items.push_back(NaItem{valid ? character + c.off.char_transform : 0,
+                             i * 8, valid ? 8u : 0u});
+    }
+    if (!NaBatchRead(c.pid, items.data(), static_cast<uint32_t>(items.size()),
+                     buffer.data(), static_cast<uint32_t>(buffer.size()))) {
+      ++cache.transform_refresh_failures;
+      continue;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+      uint64_t transform = 0;
+      std::memcpy(&transform, buffer.data() + static_cast<size_t>(i) * 8, 8);
+      if (!nzl::plausible_ptr(transform)) continue;
+      auto& entry = cache.entries[base + i];
+      if (entry.transform && entry.transform != transform)
+        ++cache.transform_repoints;
+      entry.transform = transform;
+    }
+  }
+}
 static void refresh_player_positions(Ctx& c, PlayerCache& cache) {
   const size_t count = cache.entries.size();
   const bool xyz_contiguous = c.off.ctm_x <= UINT32_MAX - 8 &&
@@ -667,51 +735,92 @@ static void refresh_player_nicknames(Ctx& c, PlayerCache& cache) {
       !nzl::plausible_ptr(c.chain.battle_model) ||
       c.chain.battle_model > UINT64_MAX - c.off.battle_model_character_slots ||
       !object_klass_name_is(*c.mem, c.chain.battle_model, c.off.il2cpp_class_name,
-                            "BattleModel", &c.class_name_cache)) return;
+                            "BattleModel", &c.class_name_cache)) {
+    cache.name_stage = NameStage::BattleModel;
+    return;
+  }
 
   auto slots = c.mem->ptr(c.chain.battle_model + c.off.battle_model_character_slots);
   if (!slots || !nzl::plausible_ptr(*slots) ||
       !object_klass_name_is(*c.mem, *slots, c.off.il2cpp_class_name,
                             "ClientCharacterSlotsModel", &c.class_name_cache) ||
-      *slots > UINT64_MAX - c.off.client_slots_by_entity_id) return;
+      *slots > UINT64_MAX - c.off.client_slots_by_entity_id) {
+    cache.name_stage = NameStage::Slots;
+    return;
+  }
   auto dict = c.mem->ptr(*slots + c.off.client_slots_by_entity_id);
-  if (!dict || !nzl::plausible_ptr(*dict)) return;
+  if (!dict || !nzl::plausible_ptr(*dict)) {
+    cache.name_stage = NameStage::Dictionary;
+    return;
+  }
 
   const auto entries = dict_int_entries(c, *dict);
-  if (entries.empty()) return;
+  if (entries.empty()) {
+    cache.name_stage = NameStage::Entries;
+    return;
+  }
   std::unordered_map<int32_t, uint64_t> slot_by_entity_id;
   slot_by_entity_id.reserve(entries.size());
   for (const auto& entry : entries) slot_by_entity_id.emplace(entry.key, entry.value);
 
+  size_t named = 0;
+  NameStage worst = NameStage::Ok;
+  auto fail = [&](NameStage stage) {
+    if (worst == NameStage::Ok) worst = stage;
+  };
   for (auto& player : cache.entries) {
     if (player.id < 0 || !nzl::plausible_ptr(player.character) ||
         player.character > UINT64_MAX - c.off.char_id) continue;
     auto live_id = c.mem->i32(player.character + c.off.char_id);
     if (!live_id || *live_id != player.id) continue;
     const auto found = slot_by_entity_id.find(player.id);
-    if (found == slot_by_entity_id.end() ||
-        !object_klass_name_is(*c.mem, found->second, c.off.il2cpp_class_name,
+    if (found == slot_by_entity_id.end()) { fail(NameStage::SlotClass); continue; }
+    if (!object_klass_name_is(*c.mem, found->second, c.off.il2cpp_class_name,
                               "BattleCharacterSlotModel", &c.class_name_cache) ||
-        found->second > UINT64_MAX - c.off.character_slot_data) continue;
+        found->second > UINT64_MAX - c.off.character_slot_data) {
+      fail(NameStage::SlotClass);
+      continue;
+    }
     auto data = c.mem->ptr(found->second + c.off.character_slot_data);
     if (!data || !nzl::plausible_ptr(*data) ||
-        !object_klass_name_is(*c.mem, *data, c.off.il2cpp_class_name,
-                              "BattleCharacterSlotData", &c.class_name_cache) ||
         *data > UINT64_MAX - c.off.character_slot_entity_id ||
-        *data > UINT64_MAX - c.off.character_slot_nickname) continue;
+        *data > UINT64_MAX - c.off.character_slot_nickname) {
+      fail(NameStage::SlotData);
+      continue;
+    }
+    if (!object_klass_name_is(*c.mem, *data, c.off.il2cpp_class_name,
+                              "BattleCharacterSlotData", &c.class_name_cache)) {
+      fail(NameStage::DataClass);
+      continue;
+    }
     auto entity_id_data = c.mem->ptr(*data + c.off.character_slot_entity_id);
     if (!entity_id_data || !nzl::plausible_ptr(*entity_id_data) ||
-        !object_klass_name_is(*c.mem, *entity_id_data, c.off.il2cpp_class_name,
-                              "IntData", &c.class_name_cache) ||
-        *entity_id_data > UINT64_MAX - c.off.primitive_value) continue;
+        *entity_id_data > UINT64_MAX - c.off.primitive_value) {
+      fail(NameStage::EntityId);
+      continue;
+    }
+    if (!object_klass_name_is(*c.mem, *entity_id_data, c.off.il2cpp_class_name,
+                              "IntData", &c.class_name_cache)) {
+      fail(NameStage::EntityId);
+      continue;
+    }
     auto slot_entity_id = c.mem->i32(*entity_id_data + c.off.primitive_value);
-    if (!slot_entity_id || *slot_entity_id != player.id) continue;
+    if (!slot_entity_id || *slot_entity_id != player.id) {
+      fail(NameStage::IdMismatch);
+      continue;
+    }
     auto nickname_data = c.mem->ptr(*data + c.off.character_slot_nickname);
-    if (!nickname_data || !nzl::plausible_ptr(*nickname_data)) continue;
+    if (!nickname_data || !nzl::plausible_ptr(*nickname_data)) {
+      fail(NameStage::Nickname);
+      continue;
+    }
     auto nickname = read_string_data(*c.mem, *nickname_data, c.off,
                                      &c.class_name_cache);
-    if (nickname) player.nickname = std::move(*nickname);
+    if (!nickname) { fail(NameStage::Nickname); continue; }
+    player.nickname = std::move(*nickname);
+    ++named;
   }
+  cache.name_stage = named ? NameStage::Ok : worst;
 }
 static void refresh_player_skeletons(Ctx& c, PlayerCache& cache,
                                      ULONGLONG now) {
@@ -846,6 +955,7 @@ static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& l
     refresh_player_nicknames(c, cache);
     cache.last_nickname_refresh = now;
   }
+  refresh_transform_pointers(c, cache);
   refresh_player_positions(c, cache);
   if (!cache.last_meta_refresh || now - cache.last_meta_refresh >= 250) {
     refresh_player_metadata(c, cache);
@@ -2174,6 +2284,18 @@ static void esp_worker(Ctx* ui) {
                       (unsigned long long)camera_position_failures,
                       (unsigned long long)camera_basis_failures,
                       work.fov, view.width, view.height, basis_status);
+      {
+        // Named-stage diagnostics: "нет имён" must come back as the gate that
+        // stopped it, and REPOINT/TFAIL show whether transform pointers are
+        // being repointed at runtime (the stale-pointer lag).
+        const size_t used = std::strlen(status);
+        if (used + 96 < sizeof(status))
+          std::snprintf(status + used, sizeof(status) - used,
+                        "\nNAME %s | REPOINT %zu TFAIL %zu",
+                        name_stage_text(player_cache.name_stage),
+                        player_cache.transform_repoints,
+                        player_cache.transform_refresh_failures);
+      }
       HWND menu_wnd = nullptr;
       bool menu_open = false;
       {

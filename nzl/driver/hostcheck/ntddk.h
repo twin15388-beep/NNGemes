@@ -218,6 +218,7 @@ NTSTATUS PsCreateSystemThread(HANDLE* thread, ULONG access, POBJECT_ATTRIBUTES o
                               HANDLE proc, PVOID cid, VOID (*start)(PVOID), PVOID ctx);
 NTSTATUS PsTerminateSystemThread(NTSTATUS status);
 NTSTATUS KeDelayExecutionThread(ULONG mode, BOOLEAN alertable, PLARGE_INTEGER interval);
+VOID KeStallExecutionProcessor(ULONG microseconds);
 VOID     KeQueryTickCount(PLARGE_INTEGER tick);
 PVOID    ExAllocatePoolWithTag(ULONG type, SIZE_T size, ULONG tag);
 VOID     ExFreePoolWithTag(PVOID p, ULONG tag);

@@ -402,6 +402,12 @@ static VOID NaWorker(PVOID ctx)
     PNA_SHM shm = (PNA_SHM)g_shm_kernel;
     LARGE_INTEGER delay;
     delay.QuadPart = -5000LL;
+    // Even a 0.5 ms relative delay is rounded up to the system timer period,
+    // so every command the overlay issues paid a tick of wake-up latency. That
+    // is the whole difference between an ESP that follows the player and one
+    // that trails it. After answering a command the worker now stays hot for a
+    // bounded window and only falls back to sleeping once the overlay is idle.
+    ULONG hot = 0;
 
     while (InterlockedAdd(&g_active, 0)) {
         LONG cur = InterlockedAdd((volatile LONG*)&shm->seq, 0);
@@ -409,7 +415,8 @@ static VOID NaWorker(PVOID ctx)
             if (shm->key != g_key) {
                 shm->status = STATUS_ACCESS_DENIED;
                 InterlockedExchange((volatile LONG*)&shm->seq_out, cur);
-                goto sleep;
+                hot = 0;
+                continue;
             }
             switch (shm->cmd) {
             case NA_CMD_READ:
@@ -465,8 +472,16 @@ static VOID NaWorker(PVOID ctx)
                 break;
             }
             InterlockedExchange((volatile LONG*)&shm->seq_out, cur);
+            // ~40 ms of cheap polling: at 60 fps the next batch arrives long
+            // before this runs out, so an active overlay never pays a sleep.
+            hot = 4000;
+            continue;
         }
-sleep:
+        if (hot) {
+            --hot;
+            KeStallExecutionProcessor(10);
+            continue;
+        }
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
     }
     PsTerminateSystemThread(STATUS_SUCCESS);
