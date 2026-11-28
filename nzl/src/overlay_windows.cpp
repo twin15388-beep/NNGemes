@@ -118,6 +118,8 @@ struct Ctx {
   bool menu = false;
   int menu_tab = 0;
   int menu_x = 32, menu_y = 48;
+  int hover_tab = -1, hover_option = -1;
+  bool hover_close = false;
   bool esp_ready = false;
   DWORD attached_pid = 0;
   std::string status = "Waiting for ROB RUN";
@@ -839,96 +841,203 @@ static void activate_option(Ctx& c, OptionId id) {
 static RECT option_rect(size_t index) {
   int col = (int)(index / kRowsPerColumn), row = (int)(index % kRowsPerColumn);
   int left = kContentX + col * (kCardWidth + 12);
-  int top = 104 + row * kCardGapY;
+  int top = 122 + row * kCardGapY;
   return RECT{left, top, left + kCardWidth, top + kCardHeight};
 }
 static void draw_text(HDC dc, int x, int y, const char* text, COLORREF color) {
   SetTextColor(dc, color);
   TextOutA(dc, x, y, text, (int)std::strlen(text));
 }
-static void draw_menu_option(HDC dc, const Ctx& c, const MenuOption& item, size_t index) {
+static void draw_fit_text(HDC dc, RECT rect, const char* text, COLORREF color, UINT flags) {
+  SetTextColor(dc, color);
+  DrawTextA(dc, text, -1, &rect, flags);
+}
+static void draw_center_text(HDC dc, RECT rect, const char* text, COLORREF color) {
+  draw_fit_text(dc, rect, text, color, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+static void fill_round_rect(HDC dc, const RECT& rect, COLORREF fill,
+                            COLORREF border, int radius = 10) {
+  HBRUSH brush = CreateSolidBrush(fill);
+  HPEN pen = CreatePen(PS_SOLID, 1, border);
+  HGDIOBJ old_brush = SelectObject(dc, brush);
+  HGDIOBJ old_pen = SelectObject(dc, pen);
+  RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+  SelectObject(dc, old_brush);
+  SelectObject(dc, old_pen);
+  DeleteObject(brush);
+  DeleteObject(pen);
+}
+static void draw_menu_option(HDC dc, const Ctx& c, const MenuOption& item,
+                             size_t index, HFONT label_font, HFONT hint_font) {
   RECT r = option_rect(index);
-  HBRUSH card = CreateSolidBrush(RGB(28, 29, 35));
-  FillRect(dc, &r, card); DeleteObject(card);
-  HPEN border = CreatePen(PS_SOLID, 1, RGB(48, 49, 58));
-  HGDIOBJ oldpen = SelectObject(dc, border);
-  HGDIOBJ oldbrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-  Rectangle(dc, r.left, r.top, r.right, r.bottom);
-  SelectObject(dc, oldbrush); SelectObject(dc, oldpen); DeleteObject(border);
-  draw_text(dc, r.left + 12, r.top + 8, item.label, RGB(230, 230, 238));
+  const bool hovered = c.hover_option == static_cast<int>(index);
+  const COLORREF card_fill = hovered ? RGB(34, 37, 49) : RGB(24, 27, 36);
+  const COLORREF card_border = hovered ? RGB(112, 91, 158) : RGB(48, 53, 66);
+  fill_round_rect(dc, r, card_fill, card_border, 12);
+  if (hovered) {
+    RECT accent{r.left, r.top + 10, r.left + 3, r.bottom - 10};
+    HBRUSH accent_brush = CreateSolidBrush(RGB(174, 118, 255));
+    FillRect(dc, &accent, accent_brush);
+    DeleteObject(accent_brush);
+  }
+
+  RECT label_rect{r.left + 15, r.top + 7, r.right - 132, r.top + 31};
+  SelectObject(dc, label_font);
+  draw_fit_text(dc, label_rect, item.label, RGB(237, 239, 247),
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   char value[48] = {};
+
   if (item.kind == OptionKind::Toggle) {
-    bool on = option_value(c, item.id);
+    const bool on = option_value(c, item.id);
     std::snprintf(value, sizeof(value), "%s", on ? "ON" : "OFF");
-    RECT pill{r.right - 70, r.top + 8, r.right - 12, r.top + 31};
-    HBRUSH pb = CreateSolidBrush(on ? RGB(107, 63, 190) : RGB(55, 56, 64));
-    FillRect(dc, &pill, pb); DeleteObject(pb);
-    draw_text(dc, pill.left + 16, pill.top + 5, value, RGB(255, 255, 255));
-    draw_text(dc, r.left + 12, r.top + 36, "Click to toggle", RGB(132, 134, 146));
+    RECT button{r.right - 88, r.top + 13, r.right - 14, r.top + 41};
+    fill_round_rect(dc, button, on ? RGB(88, 54, 145) : RGB(45, 49, 60),
+                    on ? RGB(150, 105, 219) : RGB(73, 79, 94), 8);
+    draw_center_text(dc, button, value, on ? RGB(250, 245, 255) : RGB(186, 191, 204));
+    SelectObject(dc, hint_font);
+    draw_text(dc, r.left + 16, r.top + 37,
+              on ? "Enabled - click to turn off" : "Disabled - click to turn on",
+              RGB(145, 151, 166));
   } else if (item.kind == OptionKind::Slider) {
-    float v = option_number(c, item.id);
+    const float v = option_number(c, item.id);
     std::snprintf(value, sizeof(value), "%.0f", v);
-    draw_text(dc, r.right - 54, r.top + 8, value, RGB(200, 174, 255));
-    RECT track{r.left + 14, r.top + 43, r.right - 14, r.top + 48};
-    HBRUSH tb = CreateSolidBrush(RGB(60, 61, 70)); FillRect(dc, &track, tb); DeleteObject(tb);
-    float t = item.maxv > item.minv ? (v - item.minv) / (item.maxv - item.minv) : 0;
-    t = std::clamp(t, 0.0f, 1.0f);
-    RECT fill = track; fill.right = fill.left + (int)((fill.right - fill.left) * t);
-    HBRUSH fb = CreateSolidBrush(RGB(158, 95, 245)); FillRect(dc, &fill, fb); DeleteObject(fb);
-    HBRUSH knob = CreateSolidBrush(RGB(236, 220, 255));
-    int kx = fill.right;
-    RECT kr{kx - 4, track.top - 3, kx + 4, track.bottom + 3};
-    FillRect(dc, &kr, knob); DeleteObject(knob);
+    RECT value_button{r.right - 74, r.top + 6, r.right - 13, r.top + 28};
+    fill_round_rect(dc, value_button, RGB(39, 34, 52), RGB(77, 64, 101), 7);
+    draw_center_text(dc, value_button, value, RGB(218, 196, 255));
+    RECT track{r.left + 16, r.top + 45, r.right - 16, r.top + 50};
+    fill_round_rect(dc, track, RGB(54, 59, 72), RGB(54, 59, 72), 4);
+    const float t = item.maxv > item.minv
+        ? std::clamp((v - item.minv) / (item.maxv - item.minv), 0.0f, 1.0f)
+        : 0.0f;
+    RECT fill = track;
+    fill.right = fill.left + static_cast<int>((fill.right - fill.left) * t);
+    if (fill.right > fill.left)
+      fill_round_rect(dc, fill, RGB(162, 104, 235), RGB(162, 104, 235), 4);
+    const int knob_x = fill.left + static_cast<int>((track.right - track.left) * t);
+    HBRUSH knob = CreateSolidBrush(RGB(244, 236, 255));
+    HPEN knob_border = CreatePen(PS_SOLID, 1, RGB(160, 116, 226));
+    HGDIOBJ old_brush = SelectObject(dc, knob);
+    HGDIOBJ old_pen = SelectObject(dc, knob_border);
+    Ellipse(dc, knob_x - 5, track.top - 4, knob_x + 5, track.bottom + 4);
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    DeleteObject(knob);
+    DeleteObject(knob_border);
   } else {
-    if (item.id == OptionId::AimKey) std::snprintf(value, sizeof(value), "%s", kAimKeyNames[std::clamp(c.aim_key, 0, 3)]);
-    else if (item.id == OptionId::AimBone) std::snprintf(value, sizeof(value), "%s", kBoneNames[std::clamp(c.aim_bone, 0, 2)]);
-    else std::snprintf(value, sizeof(value), "%s", kMenuKeyNames[std::clamp(c.menu_key, 0, 3)]);
-    RECT pill{r.right - 102, r.top + 9, r.right - 12, r.top + 34};
-    HBRUSH pb = CreateSolidBrush(RGB(49, 39, 68)); FillRect(dc, &pill, pb); DeleteObject(pb);
-    draw_text(dc, pill.left + 9, pill.top + 6, value, RGB(210, 188, 255));
-    draw_text(dc, r.left + 12, r.top + 38, "Click to cycle", RGB(132, 134, 146));
+    if (item.id == OptionId::AimKey)
+      std::snprintf(value, sizeof(value), "< %s >", kAimKeyNames[std::clamp(c.aim_key, 0, 3)]);
+    else if (item.id == OptionId::AimBone)
+      std::snprintf(value, sizeof(value), "< %s >", kBoneNames[std::clamp(c.aim_bone, 0, 2)]);
+    else
+      std::snprintf(value, sizeof(value), "< %s >", kMenuKeyNames[std::clamp(c.menu_key, 0, 3)]);
+    RECT button{r.right - 122, r.top + 12, r.right - 13, r.top + 41};
+    fill_round_rect(dc, button, hovered ? RGB(57, 43, 79) : RGB(40, 35, 52),
+                    RGB(84, 69, 111), 8);
+    draw_center_text(dc, button, value, RGB(221, 202, 255));
+    SelectObject(dc, hint_font);
+    draw_text(dc, r.left + 16, r.top + 37, "Click to cycle options", RGB(145, 151, 166));
   }
 }
 static void draw_menu(HDC dc, const RECT& client, const Ctx& c) {
-  HBRUSH bg = CreateSolidBrush(RGB(16, 17, 21)); FillRect(dc, &client, bg); DeleteObject(bg);
+  HBRUSH bg = CreateSolidBrush(RGB(13, 15, 21));
+  FillRect(dc, &client, bg);
+  DeleteObject(bg);
   RECT side{0, 0, kSidebarWidth, client.bottom};
-  HBRUSH sb = CreateSolidBrush(RGB(20, 20, 25)); FillRect(dc, &side, sb); DeleteObject(sb);
+  HBRUSH side_brush = CreateSolidBrush(RGB(18, 20, 28));
+  FillRect(dc, &side, side_brush);
+  DeleteObject(side_brush);
+  RECT divider{kSidebarWidth - 1, 0, kSidebarWidth, client.bottom};
+  HBRUSH divider_brush = CreateSolidBrush(RGB(38, 41, 53));
+  FillRect(dc, &divider, divider_brush);
+  DeleteObject(divider_brush);
   SetBkMode(dc, TRANSPARENT);
-  HFONT title = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
-  HFONT normal = CreateFontA(14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
-  HFONT small_font = CreateFontA(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
-  HGDIOBJ oldfont = SelectObject(dc, title);
-  draw_text(dc, 18, 20, "NZL", RGB(198, 145, 255));
-  SelectObject(dc, normal); draw_text(dc, 66, 25, "STUDIO", RGB(238, 238, 244));
-  SelectObject(dc, small_font); draw_text(dc, 18, 57, "ROB RUN  |  OVERLAY", RGB(120, 122, 136));
+
+  HFONT title = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
+  HFONT normal = CreateFontA(14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
+  HFONT small_font = CreateFontA(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
+  HGDIOBJ old_font = SelectObject(dc, title);
+
+  RECT logo{18, 18, 48, 48};
+  fill_round_rect(dc, logo, RGB(112, 69, 178), RGB(157, 111, 220), 9);
+  draw_center_text(dc, logo, "N", RGB(255, 255, 255));
+  draw_text(dc, 59, 19, "NZL STUDIO", RGB(241, 238, 248));
+  SelectObject(dc, small_font);
+  draw_text(dc, 18, 59, "ROB RUN  |  CONTROL", RGB(129, 135, 151));
+
   for (int i = 0; i < kTabCount; ++i) {
-    RECT tr{10, 96 + i * 54, kSidebarWidth - 10, 140 + i * 54};
-    if (i == c.menu_tab) {
-      HBRUSH active = CreateSolidBrush(RGB(53, 35, 76)); FillRect(dc, &tr, active); DeleteObject(active);
-      RECT stripe{10, tr.top, 13, tr.bottom}; HBRUSH accent = CreateSolidBrush(RGB(176, 104, 255)); FillRect(dc, &stripe, accent); DeleteObject(accent);
+    RECT tab{10, 96 + i * 54, kSidebarWidth - 10, 140 + i * 54};
+    const bool active = i == c.menu_tab;
+    const bool hovered = i == c.hover_tab;
+    if (active || hovered) {
+      fill_round_rect(dc, tab, active ? RGB(45, 34, 64) : RGB(29, 32, 43),
+                      active ? RGB(80, 61, 111) : RGB(50, 55, 69), 9);
+    }
+    if (active) {
+      RECT stripe{tab.left, tab.top + 9, tab.left + 3, tab.bottom - 9};
+      HBRUSH accent = CreateSolidBrush(RGB(176, 119, 245));
+      FillRect(dc, &stripe, accent);
+      DeleteObject(accent);
     }
     SelectObject(dc, normal);
-    draw_text(dc, 25, tr.top + 14, kTabNames[i], i == c.menu_tab ? RGB(245, 235, 255) : RGB(155, 157, 170));
+    draw_text(dc, tab.left + 16, tab.top + 14, kTabNames[i],
+              active ? RGB(246, 237, 255) : (hovered ? RGB(214, 209, 228) : RGB(154, 160, 175)));
   }
+
   SelectObject(dc, small_font);
-  draw_text(dc, 18, client.bottom - 42, "INSERT  hide menu", RGB(122, 124, 138));
-  draw_text(dc, 18, client.bottom - 24, "END  exit", RGB(122, 124, 138));
+  draw_text(dc, 18, client.bottom - 46, "INSERT  toggle menu", RGB(158, 164, 178));
+  draw_text(dc, 18, client.bottom - 26, "END  exit", RGB(121, 128, 144));
+
   SelectObject(dc, title);
-  draw_text(dc, kContentX, 20, kTabNames[std::clamp(c.menu_tab, 0, kTabCount - 1)], RGB(240, 239, 245));
+  draw_text(dc, kContentX, 20, kTabNames[std::clamp(c.menu_tab, 0, kTabCount - 1)],
+            RGB(241, 239, 248));
+  RECT close{client.right - 43, 10, client.right - 11, 42};
+  fill_round_rect(dc, close, c.hover_close ? RGB(105, 44, 59) : RGB(34, 36, 47),
+                  c.hover_close ? RGB(177, 77, 96) : RGB(57, 61, 75), 9);
+  draw_center_text(dc, close, "X", c.hover_close ? RGB(255, 226, 231) : RGB(205, 207, 218));
+
+  RECT status{kContentX, 52, client.right - 56, 110};
+  const COLORREF status_fill = c.esp_ready ? RGB(24, 54, 44) : RGB(48, 40, 28);
+  const COLORREF status_edge = c.esp_ready ? RGB(47, 102, 75) : RGB(98, 77, 44);
+  fill_round_rect(dc, status, status_fill, status_edge, 9);
+  HBRUSH dot_brush = CreateSolidBrush(c.esp_ready ? RGB(108, 222, 151) : RGB(236, 184, 84));
+  HPEN dot_pen = CreatePen(PS_SOLID, 1, c.esp_ready ? RGB(108, 222, 151) : RGB(236, 184, 84));
+  HGDIOBJ old_dot_brush = SelectObject(dc, dot_brush);
+  HGDIOBJ old_dot_pen = SelectObject(dc, dot_pen);
+  Ellipse(dc, status.left + 12, status.top + 24, status.left + 22, status.top + 34);
+  SelectObject(dc, old_dot_brush);
+  SelectObject(dc, old_dot_pen);
+  DeleteObject(dot_brush);
+  DeleteObject(dot_pen);
   SelectObject(dc, small_font);
-  COLORREF statusColor = c.esp_ready ? RGB(120, 230, 160) : RGB(232, 190, 105);
-  draw_text(dc, kContentX, 58, c.status.c_str(), statusColor);
-  RECT close{client.right - 42, 10, client.right - 10, 40};
-  HBRUSH cb = CreateSolidBrush(RGB(42, 34, 48)); FillRect(dc, &close, cb); DeleteObject(cb);
-  draw_text(dc, close.left + 11, close.top + 7, "X", RGB(220, 198, 245));
-  size_t count = 0; const MenuOption* items = page_options(c.menu_tab, count);
-  for (size_t i = 0; i < count; ++i) draw_menu_option(dc, c, items[i], i);
-  SelectObject(dc, oldfont);
-  DeleteObject(title); DeleteObject(normal); DeleteObject(small_font);
+  RECT status_text{status.left + 32, status.top + 3, status.right - 12, status.bottom - 3};
+  draw_fit_text(dc, status_text, c.status.c_str(),
+                c.esp_ready ? RGB(183, 239, 202) : RGB(243, 211, 158),
+                DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+  size_t count = 0;
+  const MenuOption* items = page_options(c.menu_tab, count);
+  for (size_t i = 0; i < count; ++i)
+    draw_menu_option(dc, c, items[i], i, normal, small_font);
+
+  SelectObject(dc, small_font);
+  draw_text(dc, kContentX, client.bottom - 23,
+            "Click a control to change it  |  Drag a slider  |  Insert hides",
+            RGB(115, 122, 138));
+  SelectObject(dc, old_font);
+  DeleteObject(title);
+  DeleteObject(normal);
+  DeleteObject(small_font);
 }
 static RECT g_option_rect_drag{};
 static int g_drag_option = -1;
 static bool g_drag_modified = false;
+static int g_menu_cursor_show_calls = 0;
 static bool set_menu_visible(bool visible);
 static void focus_window(HWND target) {
   if (!target || !IsWindow(target)) return;
@@ -948,22 +1057,44 @@ static bool set_menu_visible(bool visible) {
     std::lock_guard<std::mutex> lock(g_state_mutex);
     if (g_ctx->menu == visible) return true;
     g_ctx->menu = visible;
+    if (!visible) {
+      g_ctx->hover_tab = -1;
+      g_ctx->hover_option = -1;
+      g_ctx->hover_close = false;
+    }
     menu = g_ctx->menu_wnd;
     game = g_game_wnd;
     x = g_ctx->menu_x; y = g_ctx->menu_y;
   }
   ClipCursor(nullptr);
   if (visible) {
-    while (ShowCursor(TRUE) < 0) {}
+    int cursor_count = 0;
+    do {
+      cursor_count = ShowCursor(TRUE);
+      ++g_menu_cursor_show_calls;
+    } while (cursor_count < 0);
     if (menu) {
       SetWindowPos(menu, HWND_TOPMOST, x, y, kMenuWidth, kMenuHeight, SWP_SHOWWINDOW);
-      ShowWindow(menu, SW_SHOW);
       focus_window(menu);
       SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)));
       InvalidateRect(menu, nullptr, FALSE);
     }
   } else {
+    if (g_drag_option >= 0) {
+      const bool save_drag = g_drag_modified;
+      g_drag_option = -1;
+      g_drag_modified = false;
+      if (GetCapture() == menu) ReleaseCapture();
+      if (save_drag) {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        if (g_ctx) save_settings(*g_ctx);
+      }
+    }
     if (menu) ShowWindow(menu, SW_HIDE);
+    while (g_menu_cursor_show_calls > 0) {
+      ShowCursor(FALSE);
+      --g_menu_cursor_show_calls;
+    }
     if (game && IsWindow(game)) focus_window(game);
   }
   return true;
@@ -989,16 +1120,19 @@ static LRESULT CALLBACK overlay_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     std::lock_guard<std::mutex> lock(g_state_mutex);
     if (g_ctx) {
       if (!g_ctx->esp_ready) {
-        SetTextColor(dc, RGB(205, 165, 255));
-        const char* wait = "NZL Studio - waiting for ROB RUN match (INSERT: menu)";
-        TextOutA(dc, 12, 12, wait, (int)std::strlen(wait));
+        SetTextColor(dc, RGB(232, 192, 132));
+        RECT status_rect{12, 12, std::max(static_cast<int>(rc.right) - 12, 13), 68};
+        DrawTextA(dc, g_ctx->status.c_str(), -1, &status_rect,
+                  DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK | DT_END_ELLIPSIS);
       } else {
         HPEN pen = CreatePen(PS_SOLID, 2, RGB(216, 160, 255));
         HPEN thin = CreatePen(PS_SOLID, 1, RGB(177, 106, 244));
         HFONT font = CreateFontA(14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
         HGDIOBJ oldpen = SelectObject(dc, pen); HGDIOBJ oldfont = SelectObject(dc, font);
+        RECT status_rect{12, 12, std::max(static_cast<int>(rc.right) - 12, 13), 68};
         SetTextColor(dc, RGB(190, 145, 255));
-        TextOutA(dc, 12, 12, g_ctx->status.c_str(), (int)g_ctx->status.size());
+        DrawTextA(dc, g_ctx->status.c_str(), -1, &status_rect,
+                  DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK | DT_END_ELLIPSIS);
         for (auto& e : g_ctx->render) {
           float hgt = std::fabs(e.fy - e.hy); if (hgt < 2) continue;
           float wid = hgt * 0.45f;
@@ -1104,10 +1238,29 @@ static LRESULT CALLBACK menu_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return HTCLIENT;
   }
   if (msg == WM_PAINT) {
-    PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT rc{}; GetClientRect(h, &rc);
-    std::lock_guard<std::mutex> lock(g_state_mutex);
-    if (g_ctx) draw_menu(dc, rc, *g_ctx);
-    EndPaint(h, &ps); return 0;
+    PAINTSTRUCT ps{};
+    HDC target = BeginPaint(h, &ps);
+    RECT rc{}; GetClientRect(h, &rc);
+    const int width = rc.right - rc.left;
+    const int height = rc.bottom - rc.top;
+    HDC buffer = (width > 0 && height > 0) ? CreateCompatibleDC(target) : nullptr;
+    HBITMAP bitmap = buffer ? CreateCompatibleBitmap(target, width, height) : nullptr;
+    if (buffer && bitmap) {
+      HGDIOBJ old_bitmap = SelectObject(buffer, bitmap);
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        if (g_ctx) draw_menu(buffer, rc, *g_ctx);
+      }
+      BitBlt(target, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
+      SelectObject(buffer, old_bitmap);
+    } else {
+      std::lock_guard<std::mutex> lock(g_state_mutex);
+      if (g_ctx) draw_menu(target, rc, *g_ctx);
+    }
+    if (bitmap) DeleteObject(bitmap);
+    if (buffer) DeleteDC(buffer);
+    EndPaint(h, &ps);
+    return 0;
   }
   if (msg == WM_LBUTTONDOWN) {
     int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
@@ -1119,7 +1272,10 @@ static LRESULT CALLBACK menu_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       for (int i = 0; i < kTabCount; ++i) {
         RECT r{10, 96 + i * 54, kSidebarWidth - 10, 140 + i * 54};
         if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
-          g_ctx->menu_tab = i; changed = true; break;
+          g_ctx->menu_tab = i;
+          g_ctx->hover_option = -1;
+          changed = true;
+          break;
         }
       }
       if (!changed && x >= kSidebarWidth) {
@@ -1142,18 +1298,86 @@ static LRESULT CALLBACK menu_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (changed) { InvalidateRect(h, nullptr, FALSE); if (g_ctx->overlay_wnd) InvalidateRect(g_ctx->overlay_wnd, nullptr, FALSE); }
     return 0;
   }
-  if (msg == WM_MOUSEMOVE && g_drag_option >= 0 && (wp & MK_LBUTTON)) {
-    int x = GET_X_LPARAM(lp); bool changed = false;
+  if (msg == WM_MOUSEMOVE) {
+    TRACKMOUSEEVENT track{};
+    track.cbSize = sizeof(track);
+    track.dwFlags = TME_LEAVE;
+    track.hwndTrack = h;
+    TrackMouseEvent(&track);
+
+    const int x = GET_X_LPARAM(lp);
+    const int y = GET_Y_LPARAM(lp);
+    if (g_drag_option >= 0 && (wp & MK_LBUTTON)) {
+      bool changed = false;
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        if (g_ctx) {
+          size_t count = 0; const MenuOption* items = page_options(g_ctx->menu_tab, count);
+          if ((size_t)g_drag_option < count && items[g_drag_option].kind == OptionKind::Slider) {
+            set_slider_from_x(*g_ctx, items[g_drag_option], x, g_option_rect_drag.left);
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        InvalidateRect(h, nullptr, FALSE);
+        if (g_ctx && g_ctx->overlay_wnd) InvalidateRect(g_ctx->overlay_wnd, nullptr, FALSE);
+      }
+      SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32644)));
+      return 0;
+    }
+
+    bool changed = false;
+    bool interactive = false;
     {
       std::lock_guard<std::mutex> lock(g_state_mutex);
       if (g_ctx) {
-        size_t count = 0; const MenuOption* items = page_options(g_ctx->menu_tab, count);
-        if ((size_t)g_drag_option < count && items[g_drag_option].kind == OptionKind::Slider) {
-          set_slider_from_x(*g_ctx, items[g_drag_option], x, g_option_rect_drag.left); changed = true;
+        int hover_tab = -1;
+        int hover_option = -1;
+        const bool hover_close = y >= 10 && y < 42 && x >= kMenuWidth - 43 && x < kMenuWidth - 11;
+        for (int i = 0; i < kTabCount; ++i) {
+          RECT r{10, 96 + i * 54, kSidebarWidth - 10, 140 + i * 54};
+          if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
+            hover_tab = i;
+            break;
+          }
         }
+        if (x >= kSidebarWidth) {
+          size_t count = 0;
+          page_options(g_ctx->menu_tab, count);
+          for (size_t i = 0; i < count; ++i) {
+            const RECT r = option_rect(i);
+            if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
+              hover_option = static_cast<int>(i);
+              break;
+            }
+          }
+        }
+        changed = g_ctx->hover_tab != hover_tab ||
+                  g_ctx->hover_option != hover_option ||
+                  g_ctx->hover_close != hover_close;
+        g_ctx->hover_tab = hover_tab;
+        g_ctx->hover_option = hover_option;
+        g_ctx->hover_close = hover_close;
+        interactive = hover_close || hover_tab >= 0 || hover_option >= 0;
       }
     }
-    if (changed) { InvalidateRect(h, nullptr, FALSE); if (g_ctx->overlay_wnd) InvalidateRect(g_ctx->overlay_wnd, nullptr, FALSE); }
+    if (changed) InvalidateRect(h, nullptr, FALSE);
+    SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(interactive ? 32649 : 32512)));
+    return 0;
+  }
+  if (msg == WM_MOUSELEAVE) {
+    bool changed = false;
+    {
+      std::lock_guard<std::mutex> lock(g_state_mutex);
+      if (g_ctx) {
+        changed = g_ctx->hover_tab != -1 || g_ctx->hover_option != -1 || g_ctx->hover_close;
+        g_ctx->hover_tab = -1;
+        g_ctx->hover_option = -1;
+        g_ctx->hover_close = false;
+      }
+    }
+    if (changed) InvalidateRect(h, nullptr, FALSE);
     return 0;
   }
   if (msg == WM_LBUTTONUP) {
@@ -1163,8 +1387,6 @@ static LRESULT CALLBACK menu_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       g_drag_modified = false; return 0;
     }
   }
-  if (msg == WM_MOUSEMOVE) SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)));
-  if (msg == WM_KEYDOWN && wp == VK_ESCAPE) { set_menu_visible(false); return 0; }
   if (msg == WM_CLOSE) { set_menu_visible(false); return 0; }
   if (msg == WM_MOVE && g_ctx) {
     RECT r{}; GetWindowRect(h, &r);
@@ -1189,14 +1411,16 @@ static HWND find_game_window(DWORD pid) {
 }
 static void set_runtime(Ctx* ui, DWORD pid, bool ready, const std::string& status, bool clear_data) {
   HWND overlay = nullptr, menu = nullptr;
+  bool menu_status_changed = false;
   {
     std::lock_guard<std::mutex> lock(g_state_mutex);
+    menu_status_changed = ui->attached_pid != pid || ui->esp_ready != ready || ui->status != status;
     ui->attached_pid = pid; ui->esp_ready = ready; ui->status = status;
     if (clear_data) { ui->render.clear(); ui->loot.clear(); ui->cars.clear(); }
     overlay = ui->overlay_wnd; menu = ui->menu_wnd;
   }
   if (overlay) InvalidateRect(overlay, nullptr, FALSE);
-  if (menu) InvalidateRect(menu, nullptr, FALSE);
+  if (menu && menu_status_changed) InvalidateRect(menu, nullptr, FALSE);
 }
 static bool read_classes(nzl::DriverMemory& mem, uint64_t ga,
                          const nzl::Offsets& off,
@@ -1368,9 +1592,14 @@ static void esp_worker(Ctx* ui) {
     set_runtime(ui, pid, true, "ESP connected - syncing validated players", false);
     ULONGLONG last_chain_check = 0, last_pid_check = 0;
     ULONGLONG last_car_refresh = 0, last_loot_refresh = 0;
+    ULONGLONG last_menu_status_invalidate = 0;
     ULONGLONG perf_window_start = GetTickCount64();
     ULONGLONG last_work_ms = 0;
     uint32_t perf_frames = 0;
+    uint32_t camera_read_fail_streak = 0, camera_position_fail_streak = 0;
+    uint32_t camera_basis_fail_streak = 0;
+    uint64_t camera_read_failures = 0, camera_position_failures = 0;
+    uint64_t camera_basis_failures = 0;
     double measured_fps = 0.0;
     bool leave_match = false;
     while (!g_stop.load() && !leave_match) {
@@ -1414,8 +1643,14 @@ static void esp_worker(Ctx* ui) {
       };
       uint8_t camera_buf[64]{};
       if (!NaBatchRead(pid, camera_items, (uint32_t)std::size(camera_items), camera_buf, sizeof(camera_buf))) {
-        Sleep(100); continue;
+        ++camera_read_failures;
+        ++camera_read_fail_streak;
+        if (camera_read_fail_streak == 5)
+          set_runtime(ui, pid, false, "Camera batch read unavailable - ESP paused", false);
+        Sleep(100);
+        continue;
       }
+      camera_read_fail_streak = 0;
       float cpos_raw[3]{}, quaternion[4]{}, forward_raw[3]{}, right_raw[3]{}, up_raw[3]{};
       std::memcpy(cpos_raw, camera_buf, 12);
       std::memcpy(quaternion, camera_buf + 12, 16);
@@ -1423,13 +1658,34 @@ static void esp_worker(Ctx* ui) {
       std::memcpy(right_raw, camera_buf + 40, 12);
       std::memcpy(up_raw, camera_buf + 52, 12);
       nzl::Vec3f cpos{cpos_raw[0], cpos_raw[1], cpos_raw[2]}, cfwd{}, cright{}, cup{};
-      if (!std::isfinite(cpos.x) || !std::isfinite(cpos.y) || !std::isfinite(cpos.z)) { Sleep(100); continue; }
+      if (!std::isfinite(cpos.x) || !std::isfinite(cpos.y) || !std::isfinite(cpos.z)) {
+        ++camera_position_failures;
+        ++camera_position_fail_streak;
+        if (camera_position_fail_streak == 5)
+          set_runtime(ui, pid, false, "Camera position invalid - ESP paused", false);
+        Sleep(100);
+        continue;
+      }
+      camera_position_fail_streak = 0;
       bool basis_ok = work.basis_quat && basis_from_quat_values(quaternion, cfwd, cright, cup);
       if (!basis_ok) {
         cfwd = normalize({forward_raw[0], forward_raw[1], forward_raw[2]});
         cright = normalize({right_raw[0], right_raw[1], right_raw[2]});
         cup = normalize({up_raw[0], up_raw[1], up_raw[2]});
       }
+      const auto unit_vector_ok = [](const nzl::Vec3f& v) {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
+               (v.x * v.x + v.y * v.y + v.z * v.z) > 0.5f;
+      };
+      if (!unit_vector_ok(cfwd) || !unit_vector_ok(cright) || !unit_vector_ok(cup)) {
+        ++camera_basis_failures;
+        ++camera_basis_fail_streak;
+        if (camera_basis_fail_streak == 5)
+          set_runtime(ui, pid, false, "Camera basis invalid - ESP paused", false);
+        Sleep(100);
+        continue;
+      }
+      camera_basis_fail_streak = 0;
       work.cam_fwd = cfwd; work.cam_right = cright; work.radar_cam = cpos;
       auto players = snapshot_players(work, cpos, player_cache, now);
       nzl::CameraView view;
@@ -1508,35 +1764,50 @@ static void esp_worker(Ctx* ui) {
         perf_window_start = sample_time;
       }
       double paint_fps = (double)g_overlay_paint_millifps.load(std::memory_order_relaxed) / 1000.0;
-      char dictionary_status[80]{};
+      char dictionary_status[64]{};
       if (player_cache.dictionary_header_valid)
         std::snprintf(dictionary_status, sizeof(dictionary_status),
-                      "dict %u/%u active %zu",
+                      "DICT %u/%u active %zu",
                       player_cache.dictionary_count, player_cache.dictionary_capacity,
                       player_cache.dictionary_active_values);
       else
-        std::snprintf(dictionary_status, sizeof(dictionary_status), "dict INVALID");
-      char status[320];
+        std::snprintf(dictionary_status, sizeof(dictionary_status), "DICT INVALID");
+      char status[384];
       if (measured_fps > 0.0)
         std::snprintf(status, sizeof(status),
-                      "ESP data %.1f/s paint %.1f/s work %llums | %s roster %zu pos %zu draw %zu | dead %zu far %zu proj %zu edge %zu rd-fail %zu",
+                      "DATA %.1f/s | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu",
                       measured_fps, paint_fps, (unsigned long long)last_work_ms,
                       dictionary_status, player_cache.entries.size(), players.size(),
                       work.render.size(), culled_dead, culled_distance, culled_view,
-                      culled_edge, player_cache.dictionary_read_failures);
+                      culled_edge, player_cache.dictionary_read_failures,
+                      (unsigned long long)camera_read_failures,
+                      (unsigned long long)camera_position_failures,
+                      (unsigned long long)camera_basis_failures);
       else
         std::snprintf(status, sizeof(status),
-                      "ESP measuring | paint %.1f/s | %s roster %zu pos %zu draw %zu | dead %zu far %zu proj %zu edge %zu rd-fail %zu",
-                      paint_fps, dictionary_status, player_cache.entries.size(),
-                      players.size(), work.render.size(), culled_dead, culled_distance,
-                      culled_view, culled_edge, player_cache.dictionary_read_failures);
+                      "DATA measuring | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu",
+                      paint_fps, (unsigned long long)last_work_ms, dictionary_status,
+                      player_cache.entries.size(), players.size(), work.render.size(),
+                      culled_dead, culled_distance, culled_view, culled_edge,
+                      player_cache.dictionary_read_failures,
+                      (unsigned long long)camera_read_failures,
+                      (unsigned long long)camera_position_failures,
+                      (unsigned long long)camera_basis_failures);
+      HWND menu_wnd = nullptr;
+      bool menu_open = false;
       {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         ui->render = work.render; ui->loot = work.loot; ui->cars = work.cars;
         ui->cam_fwd = work.cam_fwd; ui->cam_right = work.cam_right; ui->radar_cam = work.radar_cam;
         ui->attached_pid = pid; ui->esp_ready = true; ui->status = status;
+        menu_wnd = ui->menu_wnd;
+        menu_open = ui->menu;
       }
       if (ui->overlay_wnd) InvalidateRect(ui->overlay_wnd, nullptr, FALSE);
+      if (menu_wnd && menu_open && sample_time - last_menu_status_invalidate >= 250) {
+        last_menu_status_invalidate = sample_time;
+        InvalidateRect(menu_wnd, nullptr, FALSE);
+      }
       // Pace towards 60Hz when processing is fast; if remote reads take longer,
       // immediately continue and let the displayed measurement reveal the rate.
       ULONGLONG cycle_ms = GetTickCount64() - frame_start;
@@ -1559,10 +1830,16 @@ int main() {
     menuClass.lpszClassName, L"NZL Studio", WS_POPUP, ctx.menu_x, ctx.menu_y, kMenuWidth, kMenuHeight, nullptr, nullptr, instance, nullptr);
   if (!ctx.overlay_wnd || !ctx.menu_wnd) { std::printf("[NZL] UI window creation failed.\n"); return 10; }
   SetLayeredWindowAttributes(ctx.overlay_wnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
-  ShowWindow(ctx.overlay_wnd, SW_HIDE); ShowWindow(ctx.menu_wnd, SW_HIDE);
+  ShowWindow(ctx.overlay_wnd, SW_HIDE);
+  ShowWindow(ctx.menu_wnd, SW_HIDE);
   std::thread worker(esp_worker, &ctx);
-  ULONGLONG last_window_check = 0, last_paint = 0;
+  ULONGLONG last_window_check = 0;
   DWORD window_pid = 0;
+  HWND positioned_game = nullptr;
+  int overlay_x = 0, overlay_y = 0, overlay_width = 0, overlay_height = 0;
+  bool overlay_visible = false;
+  int tracked_menu_key = -1;
+  bool menu_key_was_down = false, end_key_was_down = false;
   bool done = false;
   MSG msg{};
   while (!done && !g_stop.load()) {
@@ -1573,8 +1850,17 @@ int main() {
     int menu_key = VK_INSERT;
     bool menu_open = false;
     { std::lock_guard<std::mutex> lock(g_state_mutex); menu_key = kMenuKeys[std::clamp(ctx.menu_key, 0, 3)]; menu_open = ctx.menu; }
-    if (GetAsyncKeyState(menu_key) & 1) set_menu_visible(!menu_open);
-    if (GetAsyncKeyState(VK_END) & 1) { done = true; break; }
+    const bool menu_key_down = (GetAsyncKeyState(menu_key) & 0x8000) != 0;
+    if (menu_key != tracked_menu_key) {
+      tracked_menu_key = menu_key;
+      menu_key_was_down = menu_key_down;
+    } else {
+      if (menu_key_down && !menu_key_was_down) set_menu_visible(!menu_open);
+      menu_key_was_down = menu_key_down;
+    }
+    const bool end_key_down = (GetAsyncKeyState(VK_END) & 0x8000) != 0;
+    if (end_key_down && !end_key_was_down) { done = true; break; }
+    end_key_was_down = end_key_down;
     ULONGLONG now = GetTickCount64();
     if (now - last_window_check >= 500) {
       last_window_check = now;
@@ -1582,19 +1868,39 @@ int main() {
       HWND w = p ? find_game_window(p) : nullptr;
       if (p != window_pid || w != g_game_wnd) { window_pid = p; g_game_wnd = w; }
     }
-    if (g_game_wnd && IsWindow(g_game_wnd)) {
-      RECT cr{}; GetClientRect(g_game_wnd, &cr); POINT pt{0, 0}; ClientToScreen(g_game_wnd, &pt);
-      int width = std::max<int>((int)(cr.right - cr.left), 1), height = std::max<int>((int)(cr.bottom - cr.top), 1);
-      { std::lock_guard<std::mutex> lock(g_state_mutex); ctx.width = width; ctx.height = height; }
-      SetWindowPos(ctx.overlay_wnd, HWND_TOPMOST, pt.x, pt.y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-      ShowWindow(ctx.overlay_wnd, SW_SHOWNOACTIVATE);
-    } else ShowWindow(ctx.overlay_wnd, SW_HIDE);
-    { std::lock_guard<std::mutex> lock(g_state_mutex); menu_open = ctx.menu; }
-    if (menu_open) SetWindowPos(ctx.menu_wnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    if (now - last_paint >= 50) {
-      last_paint = now;
-      InvalidateRect(ctx.overlay_wnd, nullptr, FALSE);
-      if (menu_open) InvalidateRect(ctx.menu_wnd, nullptr, FALSE);
+    if (g_game_wnd && IsWindow(g_game_wnd) && IsWindowVisible(g_game_wnd) &&
+        !IsIconic(g_game_wnd)) {
+      RECT cr{};
+      POINT pt{0, 0};
+      if (GetClientRect(g_game_wnd, &cr)) ClientToScreen(g_game_wnd, &pt);
+      const int width = std::max<int>(static_cast<int>(cr.right - cr.left), 1);
+      const int height = std::max<int>(static_cast<int>(cr.bottom - cr.top), 1);
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        ctx.width = width;
+        ctx.height = height;
+      }
+      if (!overlay_visible || positioned_game != g_game_wnd ||
+          overlay_x != pt.x || overlay_y != pt.y ||
+          overlay_width != width || overlay_height != height) {
+        // Keep the existing topmost z-order. Raising this click-through window
+        // on every poll used to put it back above the interactive menu.
+        SetWindowPos(ctx.overlay_wnd, nullptr, pt.x, pt.y, width, height,
+                     SWP_NOACTIVATE | SWP_NOZORDER);
+        positioned_game = g_game_wnd;
+        overlay_x = pt.x;
+        overlay_y = pt.y;
+        overlay_width = width;
+        overlay_height = height;
+      }
+      if (!overlay_visible) {
+        ShowWindow(ctx.overlay_wnd, SW_SHOWNOACTIVATE);
+        overlay_visible = true;
+      }
+    } else if (overlay_visible) {
+      ShowWindow(ctx.overlay_wnd, SW_HIDE);
+      overlay_visible = false;
+      positioned_game = nullptr;
     }
     Sleep(8);
   }
