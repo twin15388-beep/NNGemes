@@ -1274,3 +1274,51 @@ bool plausible_ptr(uint64_t p) { return p > 0x10000 && p < 0x7FFFFFFFFFFF && (p 
   находится sweep'ом через прямой слот;
 - слот находится, когда окно плотно забито 2048 немишенными указателями при
   бюджете 5 кандидатов.
+
+## ROOT_OK: живая цепочка прочитана целиком (2026-11-28 16:27)
+
+`nzl_probe-3.txt`. Всё, что было теорией, стало фактом:
+
+```
+[profile] TypeInfo Game                     rva=0x81B7710 klass=0x1F0B2111E30 NAME_OK
+[profile] TypeInfo GameModel                rva=0x81B86D8 ... NAME_OK
+[profile] TypeInfo BattleModel              rva=0x82496E8 ... NAME_OK
+[profile] TypeInfo BattleEntitiesModel      rva=0x8245928 ... NAME_OK
+[profile] TypeInfo WorldEntitiesModel       rva=0x82295C8 ... NAME_OK
+[profile] TypeInfo BattleCameraModel        rva=0x823C210 ... NAME_OK
+[profile] TypeInfo BattleCharacterModel     rva=0x823FFD0 ... NAME_OK
+[root] scan calls=55 start=0x1F3408D0000 next=0x1F342A40000 candidates=1 root=FOUND
+[root] ROOT_OK Game=0x1F342019F00 GameModel=0x1F36590B540 BattleModel=0x1F37EA9A800
+        BattleEntities=0x1F37DF0FD20 WorldEntities=0x1F080DB1000
+        Dict=0x1F4144D7000 Camera=0x1F4150C7EE0
+[profile] roster dictionary Count=9 array_capacity=17
+[camera] vectors=OK pos=(-41.10,7.42,-30.88) fwd=(0.10,-0.40,-0.91)
+[snapshot] roster_count=9 roster_capacity=17 valid_pos=3 drawn=1 draw_commands=2
+  #23844 alive pos=(-40.21,3.94,-35.77) dist=6.1m @0x1F37F1ED540
+  #24157 DEAD  pos=(-55.81,4.09,-29.05) dist=15.2m
+  #24181 DEAD  pos=(-222.63,2.17,-67.22) dist=185.2m
+[probe] RESULT: ROOT_OK - exact owner fingerprint, TypeInfo names, full class
+        chain, and Dictionary bounds validated.
+```
+
+Проверка математики: камера (-41.10, 7.42, -30.88), игрок (-40.21, 3.94, -35.77),
+delta (0.89, 3.48, 4.89) -> 6.07 м, в логе dist=6.1m. Проекция и дистанции
+считаются верно.
+
+Профиль `kOwnerProfile26866884` подтверждён целиком: все семь TypeInfo RVA,
+Game.GameModel=+0xD8, Dictionary 0x18/0x20, камера 0x358. Офсеты из
+`game_profile.h` больше не «непроверенные» — они проверены на живом процессе
+с точным SHA GameAssembly.
+
+Добавлено:
+- `tools/NZL-Overlay.ps1` — запуск оверлея с проверками (админ, драйвер,
+  игра), предупреждение про CrashDumpEnabled, tee вывода в `nzl_overlay.txt`,
+  напоминание про Windowed/Borderless (layered-окно не видно в exclusive
+  fullscreen);
+- `NZL-Report.ps1` включает последние 200 строк `nzl_overlay.txt`;
+- `docs/LIVE-RUN.md` — шаг оверлея и раздел «что подтверждено живым прогоном».
+
+Не подтверждено: визуальная посадка ESP (FOV считается как 90.0 — поле матрицы
+проекции неизвестно), скелет, никнеймы, машины. valid_pos=3 из 9 — шесть
+записей словаря без читаемой позиции (мёртвые/без трансформа), причину не
+проверял.

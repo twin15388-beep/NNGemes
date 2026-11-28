@@ -244,6 +244,23 @@ if ($probeCandidates.Count -eq 0) {
     $global:NzlProbeInfo = $probe
 }
 
+# ---------------------------------------------------------------- overlay
+Add-Section "nzl_overlay.txt"
+$overlayCandidates = @()
+foreach ($rel in @("nzl_overlay.txt", "build-nzl\Release\nzl_overlay.txt")) {
+    $full = Join-Path $root $rel
+    if (Test-Path $full) { $overlayCandidates += Get-Item $full }
+}
+if ($overlayCandidates.Count -eq 0) {
+    Add-Line "MISSING - the overlay has not been run through tools\NZL-Overlay.ps1"
+} else {
+    $ov = $overlayCandidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    Add-Line "path: $($ov.FullName)"
+    Add-Line "size: $($ov.Length)  modified: $($ov.LastWriteTime.ToString('o'))"
+    $tail = Get-Content $ov.FullName -Tail 200 -ErrorAction SilentlyContinue
+    foreach ($line in $tail) { Add-Line $line }
+}
+
 # ---------------------------------------------------------------- crashes
 Add-Section "crash info"
 try {

@@ -26,7 +26,12 @@ sc_drv.c(280): warning C4996 ExAllocatePoolWithTag   # осознанно, не 
    Скрипт сам откажется работать, если `CrashDumpEnabled != 2` (exit 9).
 3. Запустить игру через Steam, дойти до **матча** (не меню).
 4. `powershell -ExecutionPolicy Bypass -File tools\NZL-Probe.ps1`
-5. `powershell -ExecutionPolicy Bypass -File tools\NZL-Report.ps1 -Zip -CopyToDropbox`
+5. `powershell -ExecutionPolicy Bypass -File tools\NZL-Overlay.ps1`
+6. `powershell -ExecutionPolicy Bypass -File tools\NZL-Report.ps1 -Zip -CopyToDropbox`
+
+Оверлей: INSERT — меню, END — выход. Режим экрана в игре должен быть
+**Windowed / Borderless**: layered-окно не рисуется поверх exclusive
+fullscreen, там композиция рабочего стола обходится стороной.
 
 ## 2. Ожидаемые строки по шагам
 
@@ -71,6 +76,23 @@ Translated... -> TRANSPORT_LOADED: sharedmem-драйвер жив, ключ о�
 Только `nzl_report_<штамп>.zip` из Dropbox. Внутри уже есть `nzl_probe.txt`
 (свежий, из `build-nzl\Release`), весь `LastTest.log`, `driver_build.log`,
 BugCheck-события и хеши `driver.sys`. Отдельно ничего копировать не нужно.
+
+## 4a. Что подтверждено живым прогоном 2026-11-28 16:27
+
+```
+TypeInfo Game/GameModel/BattleModel/BattleEntities/WorldEntities/BattleCamera/
+BattleCharacter ............ NAME_OK (все семь)
+[root] ROOT_OK Game=0x1F342019F00 GameModel=0x10x... Dict=0x... Camera=0x...
+[profile] roster dictionary Count=9 array_capacity=17
+[camera] vectors=OK pos=(-41.10,7.42,-30.88) fwd=(0.10,-0.40,-0.91)
+[snapshot] roster_count=9 valid_pos=3 drawn=1 draw_commands=2
+  #23844 alive pos=(-40.21,3.94,-35.77) dist=6.1m
+```
+
+Этого не хватало для ESP: транспорт, PEB-walk, профиль, имена классов, корень
+цепочки, словарь и камера читаются из живой игры за 55 вызовов скана.
+Не подтверждено визуально: рисуется ли текст/линии там, где ожидается (FOV
+считается как 90.0, потому что поле матрицы проекции неизвестно).
 
 ## 5. Чего в этом файле нет и почему
 
