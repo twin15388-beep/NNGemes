@@ -224,7 +224,24 @@ if (Test-Path $buildDir) {
 }
 
 # ---------------------------------------------------------------- probe
-Add-File (Join-Path $root "nzl_probe.txt") "nzl_probe.txt" 0
+Add-Section "nzl_probe.txt"
+$probeCandidates = @()
+foreach ($rel in @("build-nzl\Release\nzl_probe.txt", "build-nzl\nzl_probe.txt", "nzl_probe.txt")) {
+    $full = Join-Path $root $rel
+    if (Test-Path $full) { $probeCandidates += Get-Item $full }
+}
+if ($probeCandidates.Count -eq 0) {
+    Add-Line "MISSING - the probe has not been run from build-nzl\Release"
+} else {
+    $probe = $probeCandidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    Add-Line "path: $($probe.FullName)"
+    Add-Line "size: $($probe.Length)  modified: $($probe.LastWriteTime.ToString('o'))"
+    Add-Line "sha256: $((Get-FileHash $probe.FullName -Algorithm SHA256).Hash)"
+    Add-Line "other copies found: $($probeCandidates.Count - 1)"
+    try { Get-Content $probe.FullName -ErrorAction Stop | ForEach-Object { Add-Line $_ } }
+    catch { Add-Line "read failed: $($_.Exception.Message)" }
+    $global:NzlProbeInfo = $probe
+}
 
 # ---------------------------------------------------------------- crashes
 Add-Section "crash info"
@@ -311,18 +328,28 @@ foreach ($exe in @("nzl_protocol_tests.exe", "nzl_probe.exe", "nzl_overlay.exe")
     if (-not (Test-Path $p)) { $p = Join-Path $buildDir $exe }
     Add-Line ("{0,-24} built={1}" -f $exe, (Test-Path $p))
 }
-$listsMtime = (Get-Item (Join-Path $root "nzl\CMakeLists.txt") -ErrorAction SilentlyContinue).LastWriteTime
-$cacheMtime = (Get-Item (Join-Path $buildDir "CMakeCache.txt") -ErrorAction SilentlyContinue).LastWriteTime
-Add-Line "nzl/CMakeLists.txt modified: $listsMtime"
-Add-Line "build-nzl/CMakeCache.txt modified: $cacheMtime"
-if ($listsMtime -and $cacheMtime) {
-    if ($cacheMtime -lt $listsMtime) {
-        Add-Line "VERDICT: CONFIGURE IS STALE - build-nzl predates nzl/CMakeLists.txt, the new test target is not in the project."
-    } else {
-        Add-Line "VERDICT: configure is newer than nzl/CMakeLists.txt."
-    }
+# CMakeCache.txt is written once at the first configure and is NOT touched by
+# later reconfigures, so its mtime proves nothing. The generated project file
+# is regenerated every time: that is the real evidence that the new target
+# exists in build-nzl.
+$protocolProject = Join-Path $buildDir "nzl_protocol_tests.vcxproj"
+Add-Line "nzl/CMakeLists.txt modified: $((Get-Item (Join-Path $root "nzl\CMakeLists.txt") -ErrorAction SilentlyContinue).LastWriteTime)"
+Add-Line "generated nzl_protocol_tests.vcxproj: $(Test-Path $protocolProject)"
+if (Test-Path $protocolProject) {
+    Add-Line "  vcxproj modified: $((Get-Item $protocolProject).LastWriteTime.ToString('o'))"
+    Add-Line "VERDICT: configure generated the protocol test target."
+} else {
+    Add-Line "VERDICT: nzl_protocol_tests.vcxproj is MISSING - configure did not pick up nzl/CMakeLists.txt."
 }
-Add-Line "nzl_probe.txt: $(Test-Path (Join-Path $root 'nzl_probe.txt'))"
+if ($global:NzlProbeInfo) {
+    Add-Line "nzl_probe.txt: $($global:NzlProbeInfo.LastWriteTime.ToString('o'))"
+    $driverInfo = Get-Item (Join-Path $root "nzl\driver\driver.sys") -ErrorAction SilentlyContinue
+    if ($driverInfo -and $global:NzlProbeInfo.LastWriteTime -lt $driverInfo.LastWriteTime) {
+        Add-Line "VERDICT: probe log PREDATES driver.sys - it is an old run, not a test of this driver."
+    }
+} else {
+    Add-Line "nzl_probe.txt: NOT FOUND"
+}
 Add-Line "NOTE: report only. No driver was loaded, no BAT and no game was started."
 
 Write-Nzl "report: $report"

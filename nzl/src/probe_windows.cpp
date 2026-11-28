@@ -222,7 +222,7 @@ int main(int argc, char** argv) {
   }
   uint64_t ga = found_ga;
   uint64_t up = found_up;
-  logf("[probe] region-scan modules: GameAssembly=0x%llx UnityPlayer=0x%llx\n", (unsigned long long)ga, (unsigned long long)up);
+  logf("[probe] modules: GameAssembly=0x%llx UnityPlayer=0x%llx (source: %s)\n", (unsigned long long)ga, (unsigned long long)up, found_ga ? "PEB walk" : "region scan / snapshot");
   bool snap = false;
   if (!ga) { ga = module_base(pid, L"GameAssembly.dll", &snap); logf("[probe] snapshot fallback GameAssembly=0x%llx (%s)\n", (unsigned long long)ga, snap ? "OK" : "FAILED"); }
   if (!up) { up = module_base(pid, L"UnityPlayer.dll", &snap); }

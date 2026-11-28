@@ -1077,3 +1077,42 @@ sc_drv.c`. Значит MSVC-сборка зелёная целиком: дра�
 pwsh в песочницу поставить нельзя (release-assets.githubusercontent.com
 заблокирован), поэтому проверка скриптов держится на `check_ps1.py` +
 балансе скобок.
+
+## Первая зелёная сборка MSVC (2026-11-28 15:31)
+
+`nzl_report_20261128-153135.txt`, head `20ce0c7`. Впервые за сессию всё зелёное:
+
+```
+[NZL] driver.sys OK: nzl\driver\driver.sys (exit=0)     BUILD_OK
+[NZL] CMake configure exit=0
+  nzl_protocol_tests.vcxproj -> ...\Release\nzl_protocol_tests.exe
+[NZL] CMake build exit=0
+1/5..5/5 Passed    100% tests passed out of 5
+BuildAll exit=0
+driver.sys 18432  sha256 D3AB9214365FAA233F8478ABABB22CA4AA30C5CF5519DBC6F669019EFBFA9E80
+VERDICT: driver.sys is newer than sc_drv.c.
+nzl_protocol_tests: 300272 checks, 0 failures (в выводе CTest)
+complete: yes
+```
+
+То есть на реальном MSVC 14.51 / WDK 10.0.26100 прошли: сборка драйвера,
+сборка трёх приложений, и все пять host-наборов, включая протокольный с
+проверкой раскладки `NA_SHM` и PEB-walk. `global-metadata.dat` найден по
+правильному пути `ROB RUN_Data\il2cpp_data\Metadata\` (34498620,
+`96A86061...`) — прошлый `MISSING` был дефектом моего скрипта.
+
+Найдено и исправлено в отчёте (мои дефекты, не сборки):
+- `VERDICT: CONFIGURE IS STALE` был ложным: я сравнивал mtime `CMakeCache.txt`,
+  который при повторном configure не перезаписывается. Заменено на наличие и
+  mtime сгенерированного `nzl_protocol_tests.vcxproj`.
+- отчёт читал `nzl_probe.txt` из корня, а probe пишет его рядом с EXE
+  (`build-nzl\Release\`). Из-за этого в отчёт попадал лог от 2026-11-27 22:41
+  (тот самый, с 238-секундным регион-сканом). Теперь берётся самый свежий из
+  трёх путей + вердикт «probe log PREDATES driver.sys».
+- `logf("[probe] region-scan modules: ...")` переименовано в `modules: ...` с
+  указанием источника (`PEB walk` / `region scan`), потому что строка печаталась
+  и после успешного PEB-walk.
+
+Добавлен `docs/LIVE-RUN.md`: порядок живого прогона, ожидаемые строки,
+условия остановки, что присылать. Live-проверки по-прежнему нет: драйвер не
+загружался, игра не запускалась, ни одного значения из процесса не прочитано.
