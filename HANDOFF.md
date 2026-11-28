@@ -956,3 +956,48 @@ BSOD analysis»). Драйвер не загружался, BAT не запус�
    Только после этого `NZL-Package.ps1`. Пакет не запускать.
 2. После снятия stop по BSOD: `nzl_probe.exe` — подтвердить PEB/LDR и
    `NaGetModule(L"GameAssembly.dll")` против PSAPI-значения того же процесса.
+
+## Первый реальный отчёт Windows (2026-11-28 15:07)
+
+Прислан `nzl_report_20261128-150702.txt` с `D:\NZL Rob run`, head `393bfd3`.
+Факты из отчёта:
+
+- **Драйвер НЕ собрался**: `sc.h(9): fatal error C1083: Cannot open include file:
+  'nzl/na_wire.h'`. Причина — моя ошибка в `build_driver.bat`:
+  `/I"%~dp0..\..\include"` разворачивается в `<repo>\include`, а нужный путь —
+  `<repo>\nzl\include` (из `nzl\driver` это один уровень вверх). Исправлено на
+  `/I"%~dp0..\include"`.
+- `driver.sys` 15872 байт, 14:44, SHA `5AC9CF08...` — старше `sc_drv.c` (15:06),
+  то есть в нём нет ни PEB-walk, ни фикса скана.
+- CTest: 4 набора, `nzl_protocol_tests ran=False`; `nzl_protocol_tests.exe`
+  отсутствует в `build-nzl`, `LastTest.log` от 14:44, хотя приложения
+  пересобирались в 15:06 → `cmake --build` завершился с ошибкой (ctest при
+  `buildExit!=0` не запускается), либо configure не подхватил новый таргет.
+  Точный текст ошибки MSVC в отчёте отсутствовал — добавлен захват вывода
+  `NZL-BuildAll.ps1` через `NZL-Report.ps1 -Build`.
+- `nzl_probe.txt` от 2026-11-27 22:41 (до BSOD): регион-скан `GameAssembly.dll`
+  шёл **238 секунд**, 5809 запросов `NaQueryRegion`, и всё равно 0x0 — скан
+  остановился на `0x7fffffff0000`, не дойдя до системной области, где лежат
+  модули. Это и есть настоящая причина «проба висит». Переписан порядок поиска
+  модулей в `nzl/src/probe_windows.cpp`: сначала `NaGetModule` (NA_CMD_MODULE,
+  один PEB-walk в драйвере), проверка MZ через транспорт, и только при неудаче —
+  старый регион-скан с бюджетом 4096 регионов.
+- `winsdk: MISSING` в отчёте — мой скрипт смотрел только
+  `C:\Program Files (x86)\Windows Kits\10`, а SDK лежит в `D:\Windows Kits\10`
+  (это видно в `driver_build.log`). Исправлено: чтение `KitsRoot10` из реестра
+  + fallback-пути.
+- `global-metadata.dat MISSING` — тоже ошибка скрипта: искал только в корне игры.
+  Для Unity 6 файл лежит в `<Product>_Data\il2cpp_data\Metadata\`. Исправлено:
+  рекурсивный поиск + печать реального пути.
+- Игра: GameAssembly.dll 148323840 SHA `2DC33269...`, UnityPlayer.dll SHA
+  `E702F4B9...`, ROB RUN.exe SHA `172AFF59...` — совпадает с прошлым
+  fingerprint, билд не менялся. eac folder: True.
+
+Сделано в этой итерации: фикс `/I`, `static_assert` вместо typedef-трюка в C++,
+`NZL-Report.ps1 -Build` (захват полного вывода BuildAll в отчёт и
+`build_all.log`), печать mtime `CMakeLists.txt` vs `CMakeCache.txt` с вердиктом
+о протухшем configure, новые поиски SDK/metadata, PEB-walk в probe.
+
+Проверено здесь: `t_protocol` 300272/0, `check_driver.sh`, `check_client.sh` —
+exit 0. Не проверено: сама сборка MSVC (нет тулчейна), поэтому точная причина
+ошибки `nzl_protocol_tests` пока неизвестна — нужен вывод `-Build`.

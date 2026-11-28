@@ -10,7 +10,7 @@ into one text file (plus an optional zip), so one command closes the loop.
 Usage (from the repo root, no admin needed for the report itself):
   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-Report.ps1
   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-Report.ps1 -GameDir "D:\tools\steamapps\common\Rob Run"
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-Report.ps1 -Zip -CopyToDropbox
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-Report.ps1 -Build -Zip -CopyToDropbox
 
 Output:
   nzl_report_<yyyyMMdd-HHmmss>.txt  in the repo root
@@ -22,6 +22,7 @@ copies the report into Dropbox.
 #>
 param(
     [string]$GameDir = "",
+    [switch]$Build,
     [switch]$Zip,
     [switch]$CopyToDropbox
 )
@@ -119,12 +120,49 @@ if (Test-Path $vswhere) {
 } else {
     Add-Line "vswhere: MISSING"
 }
-$kits = "C:\Program Files (x86)\Windows Kits\10\Include"
-if (Test-Path $kits) {
+$kitsRoot = ""
+foreach ($rkPath in @("HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots",
+                      "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots")) {
+    if ($kitsRoot) { break }
+    try {
+        $rk = Get-ItemProperty -Path $rkPath -Name KitsRoot10 -ErrorAction Stop
+        if ($rk.KitsRoot10) { $kitsRoot = $rk.KitsRoot10 }
+    } catch { }
+}
+if (-not $kitsRoot) {
+    foreach ($candidate in @("C:\Program Files (x86)\Windows Kits\10", "D:\Windows Kits\10", "C:\Program Files\Windows Kits\10")) {
+        if (-not $kitsRoot -and (Test-Path (Join-Path $candidate "Include"))) { $kitsRoot = $candidate }
+    }
+}
+Add-Line "winsdk root: $(if ($kitsRoot) { $kitsRoot } else { 'NOT FOUND' })"
+$kits = if ($kitsRoot) { Join-Path $kitsRoot "Include" } else { "" }
+if ($kits -and (Test-Path $kits)) {
     Add-Line "winsdk: $((Get-ChildItem $kits -Directory | Select-Object -ExpandProperty Name) -join ', ')"
     $km = Get-ChildItem $kits -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'km\ntddk.h') }
     if ($km) { Add-Line "wdk km headers: $($km.Name -join ', ')" } else { Add-Line "wdk km headers: MISSING" }
 } else { Add-Line "winsdk: MISSING at $kits" }
+
+# ---------------------------------------------------------------- build
+if ($Build) {
+    Add-Section "NZL-BuildAll.ps1 (captured output)"
+    $scriptPath = Join-Path $root "tools\NZL-BuildAll.ps1"
+    $buildLogPath = Join-Path $root "build_all.log"
+    Add-Line "running: $scriptPath"
+    $buildStart = Get-Date
+    $buildExit = -1
+    try {
+        $captured = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath 2>&1
+        $buildExit = $LASTEXITCODE
+    } catch {
+        $captured = @("BuildAll failed to start: $($_.Exception.Message)")
+    }
+    $captured | ForEach-Object { Add-Line "$_" }
+    try { $captured | Set-Content -Path $buildLogPath -Encoding UTF8 } catch {}
+    Add-Line ""
+    Add-Line "BuildAll exit=$buildExit  duration=$([int]((Get-Date) - $buildStart).TotalSeconds)s"
+    Add-Line "full transcript also written to: $buildLogPath"
+    Write-Nzl "BuildAll exit=$buildExit"
+}
 
 # ---------------------------------------------------------------- driver
 Add-File (Join-Path $root "driver_build.log") "driver build log (full)" 0
@@ -225,11 +263,25 @@ if (-not $GameDir) {
 }
 if ($GameDir -and (Test-Path $GameDir)) {
     Add-Line "game dir: $GameDir"
-    foreach ($f in @("GameAssembly.dll", "global-metadata.dat", "UnityPlayer.dll", "ROB RUN.exe")) {
-        $p = Join-Path $GameDir $f
-        if (Test-Path $p) {
+    $metaPath = Join-Path $GameDir "global-metadata.dat"
+    if (-not (Test-Path $metaPath)) {
+        $hit = Get-ChildItem $GameDir -Recurse -Filter "global-metadata.dat" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($hit) { $metaPath = $hit.FullName }
+    }
+    $gameFiles = @(
+        @{ name = "GameAssembly.dll";    path = (Join-Path $GameDir "GameAssembly.dll") },
+        @{ name = "UnityPlayer.dll";     path = (Join-Path $GameDir "UnityPlayer.dll") },
+        @{ name = "ROB RUN.exe";         path = (Join-Path $GameDir "ROB RUN.exe") },
+        @{ name = "global-metadata.dat"; path = $metaPath }
+    )
+    foreach ($entry in $gameFiles) {
+        $f = $entry.name
+        $p = $entry.path
+        if ($p -and (Test-Path $p)) {
             $i = Get-Item $p
             Add-Line ("{0,-24} size={1,12}  {2}" -f $f, $i.Length, $i.LastWriteTime.ToString('o'))
+            Add-Line ("  path   {0}" -f $p)
             Add-Line ("  sha256 {0}" -f (Get-FileHash $p -Algorithm SHA256).Hash)
         } else {
             Add-Line ("{0,-24} MISSING" -f $f)
@@ -252,6 +304,22 @@ if (Test-Path $log) {
     }
     if ($content -match '(\d+)% tests passed, (\d+) tests failed out of (\d+)') {
         Add-Line "ctest summary: $($Matches[1])% passed, $($Matches[2]) failed, $($Matches[3]) total"
+    }
+}
+foreach ($exe in @("nzl_protocol_tests.exe", "nzl_probe.exe", "nzl_overlay.exe")) {
+    $p = Join-Path $build ("Release\" + $exe)
+    if (-not (Test-Path $p)) { $p = Join-Path $build $exe }
+    Add-Line ("{0,-24} built={1}" -f $exe, (Test-Path $p))
+}
+$listsMtime = (Get-Item (Join-Path $root "nzl\CMakeLists.txt") -ErrorAction SilentlyContinue).LastWriteTime
+$cacheMtime = (Get-Item (Join-Path $build "CMakeCache.txt") -ErrorAction SilentlyContinue).LastWriteTime
+Add-Line "nzl/CMakeLists.txt modified: $listsMtime"
+Add-Line "build-nzl/CMakeCache.txt modified: $cacheMtime"
+if ($listsMtime -and $cacheMtime) {
+    if ($cacheMtime -lt $listsMtime) {
+        Add-Line "VERDICT: CONFIGURE IS STALE - build-nzl predates nzl/CMakeLists.txt, the new test target is not in the project."
+    } else {
+        Add-Line "VERDICT: configure is newer than nzl/CMakeLists.txt."
     }
 }
 Add-Line "nzl_probe.txt: $(Test-Path (Join-Path $root 'nzl_probe.txt'))"

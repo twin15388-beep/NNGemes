@@ -111,12 +111,17 @@ typedef struct _NA_SHM {
 #define NA_SHM_OFF_DATA    0x454
 #define NA_SHM_SIZE        0x10454
 
-/* Compile-time layout asserts. C89/C99/MSVC-C and C++ all accept the
- * negative-array-size trick, so this works in the WDK build too. */
+/* Compile-time layout asserts, checked by BOTH sides of the protocol.
+ * C++ uses the language feature; the WDK C build uses the negative-array
+ * trick, which every C dialect MSVC accepts. */
+#if defined(__cplusplus)
+#define NA_STATIC_ASSERT(cond, tag) static_assert((cond), #tag)
+#else
 #define NA_JOIN2(a, b) a##b
 #define NA_JOIN(a, b) NA_JOIN2(a, b)
 #define NA_STATIC_ASSERT(cond, tag) \
     typedef char NA_JOIN(na_static_assert_, tag)[(cond) ? 1 : -1]
+#endif
 
 NA_STATIC_ASSERT(sizeof(NA_ITEM) == 16, item_size);
 NA_STATIC_ASSERT(sizeof(NA_REGION) == 32, region_size);

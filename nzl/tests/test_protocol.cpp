@@ -410,8 +410,9 @@ void test_scan_completeness() {
   CHECK(got2 == ref);
 
   /* Small chunks must not change the result set. */
-  for (uint32_t chunk : {8u, 24u, 64u, 4096u, 0x10000u}) {
-    ScanRunner r3(space, chunk);
+  const uint32_t chunks[] = {8u, 24u, 64u, 4096u, 0x10000u};
+  for (unsigned ci = 0; ci < sizeof(chunks) / sizeof(chunks[0]); ++ci) {
+    ScanRunner r3(space, chunks[ci]);
     auto g = scan_all(r3, 0, pattern, 256);
     std::sort(g.begin(), g.end());
     CHECK(g == ref);

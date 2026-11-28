@@ -126,17 +126,47 @@ int main(int argc, char** argv) {
          ok0 ? "OK" : "FAIL/TIMEOUT", (unsigned long long)(GetTickCount64() - t0),
          (unsigned long long)r0.base, (unsigned long long)r0.size, r0.state, r0.protect, r0.type);
   }
-  // ONE pass for BOTH modules: each NaQueryRegion costs ~16 ms (worker
-  // poll tick), and the old code scanned the whole address space twice
-  // (~4600+ regions seen live on explorer = minutes per pass). Return as
-  // soon as both are found.
   uint64_t found_ga = 0, found_up = 0;
+
+  // FIRST PATH: NA_CMD_MODULE. The driver walks the target PEB
+  // (PEB+0x18 -> LDR+0x10 -> InLoadOrderModuleList) and returns DllBase in
+  // ONE command. The previous probe had only the region scan below: 5809
+  // REGION round trips at ~16 ms each = 238 s live (nzl_probe.txt
+  // 2026-11-27 22:41) and it still returned 0x0 for both modules because
+  // the walk stopped at 0x7fffffff0000 before reaching the system DLL area.
+  {
+    ULONGLONG t0 = GetTickCount64();
+    found_ga = NaGetModule((uint32_t)pid, L"GameAssembly.dll");
+    found_up = NaGetModule((uint32_t)pid, L"UnityPlayer.dll");
+    logf("[probe] NaGetModule (PEB walk): GameAssembly=0x%llx UnityPlayer=0x%llx (+%llums)\n",
+         (unsigned long long)found_ga, (unsigned long long)found_up,
+         (unsigned long long)(GetTickCount64() - t0));
+  }
+  // A module base must point at a real MZ header; anything else is a bad
+  // PEB walk and must not be trusted downstream.
+  auto image_ok = [&](uint64_t va) -> bool {
+    if (!va) return false;
+    uint16_t mz = 0;
+    if (!NaRead((uint32_t)pid, va, &mz) || mz != 0x5A4D) {
+      logf("[probe] reject module base 0x%llx: no MZ header via transport\n",
+           (unsigned long long)va);
+      return false;
+    }
+    return true;
+  };
+  if (!image_ok(found_ga)) found_ga = 0;
+  if (!image_ok(found_up)) found_up = 0;
+
+  // SECOND PATH (fallback only): region scan, MEM_IMAGE regions, export
+  // DLL name match. Kept because it is the only discovery that works if the
+  // PEB walk is wrong on this build; bounded to 4096 regions so it can never
+  // burn another four minutes.
   auto find_images = [&]() {
     const char* want = "GameAssembly.dll+UnityPlayer.dll";
     uint64_t addr = 0x10000;
     ULONGLONG scan_t0 = GetTickCount64();
     logf("[probe] region-scan start want=%s\n", want);
-    for (int i = 0; i < 16384 && addr < 0x0000800000000000ULL; i++) {
+    for (int i = 0; i < 4096 && addr < 0x0000800000000000ULL; i++) {
       NaRegion r{};
       if (!NaQueryRegion((uint32_t)pid, addr, &r)) {
         logf("[probe] region-scan %s: NaQueryRegion FAIL at i=%d addr=0x%llx (scan ends)\n",
@@ -186,7 +216,10 @@ int main(int argc, char** argv) {
       addr = next;
     }
   };
-  find_images();
+  if (!found_ga || !found_up) {
+    logf("[probe] PEB walk incomplete -> falling back to bounded region scan\n");
+    find_images();
+  }
   uint64_t ga = found_ga;
   uint64_t up = found_up;
   logf("[probe] region-scan modules: GameAssembly=0x%llx UnityPlayer=0x%llx\n", (unsigned long long)ga, (unsigned long long)up);

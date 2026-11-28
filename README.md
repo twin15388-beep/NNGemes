@@ -44,6 +44,7 @@
 - [`tools/NZL-LoadDriver.ps1`](tools/NZL-LoadDriver.ps1) — первичная загрузка или безопасное переиспользование транспорта.
 - [`tools/NZL-Package.ps1`](tools/NZL-Package.ps1) — генератор одного `NZL-Studio.bat` со встроенными `driver.sys`, `kdmapper.exe`, `nzl_overlay.exe`.
 - [`NZL-START.bat`](NZL-START.bat) — multi-file Windows launcher; `NZL-Studio.bat` создаётся package builder.
+- [`tools/NZL-Report.ps1`](tools/NZL-Report.ps1) — один txt со всем состоянием сборки (git, toolchain, `driver_build.log`, `LastTest.log`, `nzl_probe.txt`, BugCheck, хеши). `-Build` дополнительно прогоняет `NZL-BuildAll.ps1` с полным захватом вывода, `-CopyToDropbox` кладёт отчёт в Dropbox.
 - [`tools/NZL-Collect.ps1`](tools/NZL-Collect.ps1), [`tools/NZL-Dump.ps1`](tools/NZL-Dump.ps1), [`docs/EXTRACT.md`](docs/EXTRACT.md) — сбор fingerprint/dump для проверки build-specific данных; [`docs/ANALYSIS.md`](docs/ANALYSIS.md) — результаты анализа и тестов.
 
 ## Build и запуск на Windows

@@ -82,7 +82,7 @@ if not exist "x64\Release" mkdir "x64\Release"
 
 echo [1/2] compiling sc_drv.c  (MSVC %MSVC%, SDK %SDK%)
 "%CLX%" /c /nologo /W3 /O2 /D_WIN64 /D_AMD64_ /DAMD64 /DNDEBUG /MT /GS- /Zc:wchar_t /Zc:forScope /GR- ^
-  /I"%INC_KM%" /I"%INC_SH%" /I"%INC_CRT%" /I"%~dp0..\..\include" /kernel ^
+  /I"%INC_KM%" /I"%INC_SH%" /I"%INC_CRT%" /I"%~dp0..\include" /kernel ^
   /Fo"x64\Release\sc_drv.obj" sc_drv.c
 if errorlevel 1 ( echo [FAILED] compile & exit /b 1 )
 
