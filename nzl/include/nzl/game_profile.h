@@ -78,6 +78,32 @@ struct CharacterOffsets {
   OffsetValue il2cpp_class_name{};
 };
 
+// Raw managed SkeletonModel/SkeletonConfig layout. The count/stride/index
+// values themselves are read from each live SkeletonConfig object; the fixed
+// values here are only field offsets and safety ceilings.
+struct SkeletonOffsets {
+  OffsetValue character_model{};
+  OffsetValue model_description{};
+  OffsetValue model_bones_data{};
+  OffsetValue config_bones_count{};
+  OffsetValue config_bone_data_size{};
+  OffsetValue config_local_position_orientation_offset{};
+  OffsetValue config_model_orientation_offset{};
+  OffsetValue config_bone_length_offset{};
+  OffsetValue config_bones_hierarchy_data{};
+  OffsetValue config_hierarchy_max_children_count{};
+  OffsetValue config_root_index{};
+  OffsetValue config_legs_index{};
+  OffsetValue config_spine2_index{};
+  OffsetValue config_spine3_index{};
+  OffsetValue config_neck_index{};
+  OffsetValue config_head1_index{};
+  OffsetValue config_head2_index{};
+  std::uint32_t max_bones = 0;
+  std::uint32_t max_bone_data_floats = 0;
+  std::uint32_t max_hierarchy_ints = 0;
+};
+
 struct NicknameOffsets {
   OffsetValue battle_model_character_slots{};
   OffsetValue client_slots_by_entity_id{};
@@ -132,6 +158,7 @@ struct GameProfile {
   ChainOffsets chain{};
   DictionaryOffsets dictionary{};
   CharacterOffsets character{};
+  SkeletonOffsets skeleton{};
   NicknameOffsets nickname{};
   CameraOffsets camera{};
   OptionalFeatureOffsets optional_features{};
@@ -200,6 +227,28 @@ inline constexpr GameProfile kOwnerProfile26866884 = []() constexpr {
                  offset(0x14, Evidence::OwnerFingerprint, "owner SDK CharacterTransformModel, build 26866884; owner live player-position plausibility sample"),
                  offset(0x18, Evidence::OwnerFingerprint, "owner SDK CharacterTransformModel, build 26866884; owner live player-position plausibility sample; lm3684759 dump 2026-11-22 differs and is not selected"),
                  offset(0x10, Evidence::SingleSource, "InsideExploit SDK TypeInfo classes, build 26866884; IL2CPP Il2CppClass.name; all seven names checked at runtime")};
+
+  // Raw managed skeleton layout. These field offsets match all eight SDK dumps
+  // inspected (26509119 through 26866884); runtime count/stride/index values
+  // are read from each SkeletonConfig object, never guessed from another build.
+  p.skeleton = {offset(0x138, Evidence::CrossChecked, "BattleCharacterModel.SkeletonModel; InsideExploit SDK dumps 26509119, 26559853, 26586703, 26599424, 26615022, 26726105, 26807668, 26866884"),
+                offset(0x10, Evidence::CrossChecked, "SkeletonModel._skeletonDescription; same eight SDK dumps"),
+                offset(0x18, Evidence::CrossChecked, "SkeletonModel._bonesData; same eight SDK dumps"),
+                offset(0x10, Evidence::CrossChecked, "SkeletonConfig.BonesCount; same eight SDK dumps"),
+                offset(0x14, Evidence::CrossChecked, "SkeletonConfig.BoneDataSize; same eight SDK dumps"),
+                offset(0x18, Evidence::CrossChecked, "SkeletonConfig.BoneDataLocalPositionOrientationOffset; same eight SDK dumps"),
+                offset(0x1C, Evidence::CrossChecked, "SkeletonConfig.BoneDataModelOrientationOffset; same eight SDK dumps"),
+                offset(0x20, Evidence::CrossChecked, "SkeletonConfig.BoneDataLengthOffset; same eight SDK dumps"),
+                offset(0x28, Evidence::CrossChecked, "SkeletonConfig.BonesHierarchyData; same eight SDK dumps"),
+                offset(0x30, Evidence::CrossChecked, "SkeletonConfig.BonesHierarchyMaxChildrenCount; same eight SDK dumps"),
+                offset(0x34, Evidence::CrossChecked, "SkeletonConfig.RootIndex; same eight SDK dumps"),
+                offset(0x38, Evidence::CrossChecked, "SkeletonConfig.LegsIndex; same eight SDK dumps"),
+                offset(0x3C, Evidence::CrossChecked, "SkeletonConfig.Spine2Index; same eight SDK dumps"),
+                offset(0x40, Evidence::CrossChecked, "SkeletonConfig.Spine3Index; same eight SDK dumps"),
+                offset(0x44, Evidence::CrossChecked, "SkeletonConfig.NeckIndex; same eight SDK dumps"),
+                offset(0x48, Evidence::CrossChecked, "SkeletonConfig.Head1Index; same eight SDK dumps"),
+                offset(0x4C, Evidence::CrossChecked, "SkeletonConfig.Head2Index; same eight SDK dumps"),
+                256, 64, 8192};
 
   // Nickname lookup: BattleModel.CharacterSlotsModel ->
   // ClientCharacterSlotsModel._slotByEntityId -> BattleCharacterSlotModel._data
@@ -316,6 +365,30 @@ constexpr bool core_offsets_configured(const GameProfile& p) {
          offset_usable32(p.camera.look_at_orientation) &&
          offset_usable32(p.camera.forward) && offset_usable32(p.camera.right) &&
          offset_usable32(p.camera.up);
+}
+
+constexpr bool skeleton_offsets_configured(const GameProfile& p) {
+  const auto& s = p.skeleton;
+  return offset_usable32(s.character_model) &&
+         offset_usable32(s.model_description) &&
+         offset_usable32(s.model_bones_data) &&
+         offset_usable32(s.config_bones_count) &&
+         offset_usable32(s.config_bone_data_size) &&
+         offset_usable32(s.config_local_position_orientation_offset) &&
+         offset_usable32(s.config_model_orientation_offset) &&
+         offset_usable32(s.config_bone_length_offset) &&
+         offset_usable32(s.config_bones_hierarchy_data) &&
+         offset_usable32(s.config_hierarchy_max_children_count) &&
+         offset_usable32(s.config_root_index) &&
+         offset_usable32(s.config_legs_index) &&
+         offset_usable32(s.config_spine2_index) &&
+         offset_usable32(s.config_spine3_index) &&
+         offset_usable32(s.config_neck_index) &&
+         offset_usable32(s.config_head1_index) &&
+         offset_usable32(s.config_head2_index) &&
+         s.max_bones >= 2 && s.max_bones <= 256 &&
+         s.max_bone_data_floats >= 9 && s.max_bone_data_floats <= 64 &&
+         s.max_hierarchy_ints > 0 && s.max_hierarchy_ints <= 8192;
 }
 
 constexpr bool type_info_rvas_fit_image(const GameProfile& p,

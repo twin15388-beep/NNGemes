@@ -46,6 +46,27 @@ struct Offsets {
   uint32_t ctm_y = 0;
   uint32_t ctm_z = 0;
   uint32_t il2cpp_class_name = 0;
+  uint32_t skeleton_character_model = 0;
+  uint32_t skeleton_model_description = 0;
+  uint32_t skeleton_model_bones_data = 0;
+  uint32_t skeleton_config_bones_count = 0;
+  uint32_t skeleton_config_bone_data_size = 0;
+  uint32_t skeleton_config_local_pose_offset = 0;
+  uint32_t skeleton_config_model_pose_offset = 0;
+  uint32_t skeleton_config_bone_length_offset = 0;
+  uint32_t skeleton_config_hierarchy_data = 0;
+  uint32_t skeleton_config_hierarchy_max_children = 0;
+  uint32_t skeleton_config_root_index = 0;
+  uint32_t skeleton_config_legs_index = 0;
+  uint32_t skeleton_config_spine2_index = 0;
+  uint32_t skeleton_config_spine3_index = 0;
+  uint32_t skeleton_config_neck_index = 0;
+  uint32_t skeleton_config_head1_index = 0;
+  uint32_t skeleton_config_head2_index = 0;
+  uint32_t skeleton_max_bones = 0;
+  uint32_t skeleton_max_bone_data_floats = 0;
+  uint32_t skeleton_max_hierarchy_ints = 0;
+  bool skeleton_offsets_configured = false;
   uint32_t battle_model_character_slots = 0;
   uint32_t client_slots_by_entity_id = 0;
   uint32_t character_slot_data = 0;
@@ -118,6 +139,27 @@ struct Offsets {
         ctm_y(profile_offset32(p.character.transform_y)),
         ctm_z(profile_offset32(p.character.transform_z)),
         il2cpp_class_name(profile_offset32(p.character.il2cpp_class_name)),
+        skeleton_character_model(profile_offset32(p.skeleton.character_model)),
+        skeleton_model_description(profile_offset32(p.skeleton.model_description)),
+        skeleton_model_bones_data(profile_offset32(p.skeleton.model_bones_data)),
+        skeleton_config_bones_count(profile_offset32(p.skeleton.config_bones_count)),
+        skeleton_config_bone_data_size(profile_offset32(p.skeleton.config_bone_data_size)),
+        skeleton_config_local_pose_offset(profile_offset32(p.skeleton.config_local_position_orientation_offset)),
+        skeleton_config_model_pose_offset(profile_offset32(p.skeleton.config_model_orientation_offset)),
+        skeleton_config_bone_length_offset(profile_offset32(p.skeleton.config_bone_length_offset)),
+        skeleton_config_hierarchy_data(profile_offset32(p.skeleton.config_bones_hierarchy_data)),
+        skeleton_config_hierarchy_max_children(profile_offset32(p.skeleton.config_hierarchy_max_children_count)),
+        skeleton_config_root_index(profile_offset32(p.skeleton.config_root_index)),
+        skeleton_config_legs_index(profile_offset32(p.skeleton.config_legs_index)),
+        skeleton_config_spine2_index(profile_offset32(p.skeleton.config_spine2_index)),
+        skeleton_config_spine3_index(profile_offset32(p.skeleton.config_spine3_index)),
+        skeleton_config_neck_index(profile_offset32(p.skeleton.config_neck_index)),
+        skeleton_config_head1_index(profile_offset32(p.skeleton.config_head1_index)),
+        skeleton_config_head2_index(profile_offset32(p.skeleton.config_head2_index)),
+        skeleton_max_bones(p.skeleton.max_bones),
+        skeleton_max_bone_data_floats(p.skeleton.max_bone_data_floats),
+        skeleton_max_hierarchy_ints(p.skeleton.max_hierarchy_ints),
+        skeleton_offsets_configured(game_profile::skeleton_offsets_configured(p)),
         battle_model_character_slots(profile_offset32(p.nickname.battle_model_character_slots)),
         client_slots_by_entity_id(profile_offset32(p.nickname.client_slots_by_entity_id)),
         character_slot_data(profile_offset32(p.nickname.character_slot_data)),

@@ -33,6 +33,7 @@
 #include "nzl/chain.h"
 #include "nzl/driver_memory.h"
 #include "nzl/esp_pipeline.h"
+#include "nzl/skeleton.h"
 #include "nzl/windows_profile.h"
 #include "../client/sc_client.h"
 
@@ -377,14 +378,21 @@ struct PlayerCacheEntry {
   uint64_t hp_value_addr = 0, hp_max_addr = 0, armor_value_addr = 0, role_index_addr = 0;
   nzl::Vec3f pos{}; int32_t id = 0, hp = -1, maxhp = 0, role = -2; bool dead = false, armor = false;
   std::wstring nickname;
+  nzl::SkeletonSnapshot skeleton;
+  nzl::SkeletonReadStage skeleton_stage = nzl::SkeletonReadStage::ProfileDisabled;
+  bool skeleton_valid = false;
 };
 struct PlayerCache {
   std::vector<PlayerCacheEntry> entries;
   uint32_t dictionary_count = 0, dictionary_capacity = 0;
   size_t dictionary_active_values = 0, dictionary_read_failures = 0;
   bool dictionary_header_valid = false;
+  size_t skeleton_attempted = 0, skeleton_model_matches = 0;
+  size_t skeleton_description_matches = 0, skeleton_valid = 0;
+  int32_t skeleton_bone_count = 0, skeleton_head1_index = -1;
+  nzl::SkeletonReadStage skeleton_last_stage = nzl::SkeletonReadStage::ProfileDisabled;
   ULONGLONG last_roster_check = 0, last_record_refresh = 0, last_meta_refresh = 0;
-  ULONGLONG last_nickname_refresh = 0;
+  ULONGLONG last_nickname_refresh = 0, last_skeleton_refresh = 0;
 };
 // Read up to 64 independent fields per driver command, preserving one
 // output slot per request. Player pointer chains are refreshed separately
@@ -691,6 +699,104 @@ static void refresh_player_nicknames(Ctx& c, PlayerCache& cache) {
     if (nickname) player.nickname = std::move(*nickname);
   }
 }
+static void refresh_player_skeletons(Ctx& c, PlayerCache& cache,
+                                     ULONGLONG now) {
+  cache.skeleton_attempted = 0;
+  cache.skeleton_model_matches = 0;
+  cache.skeleton_description_matches = 0;
+  cache.skeleton_valid = 0;
+  cache.skeleton_bone_count = 0;
+  cache.skeleton_head1_index = -1;
+  cache.skeleton_last_stage = c.off.skeleton_offsets_configured
+                                  ? nzl::SkeletonReadStage::Ok
+                                  : nzl::SkeletonReadStage::ProfileDisabled;
+
+  for (auto& player : cache.entries) {
+    player.skeleton = {};
+    player.skeleton_valid = false;
+    player.skeleton_stage = cache.skeleton_last_stage;
+  }
+  if (!c.off.skeleton_offsets_configured || !c.mem) {
+    if (!c.mem && c.off.skeleton_offsets_configured)
+      cache.skeleton_last_stage = nzl::SkeletonReadStage::ModelPointer;
+    cache.last_skeleton_refresh = now;
+    return;
+  }
+
+  for (auto& player : cache.entries) {
+    ++cache.skeleton_attempted;
+    if (!nzl::plausible_ptr(player.character) ||
+        player.character > UINT64_MAX - c.off.skeleton_character_model) {
+      player.skeleton_stage = nzl::SkeletonReadStage::ModelPointer;
+      cache.skeleton_last_stage = player.skeleton_stage;
+      continue;
+    }
+    const auto model = c.mem->ptr(player.character + c.off.skeleton_character_model);
+    if (!model || !nzl::plausible_ptr(*model)) {
+      player.skeleton_stage = nzl::SkeletonReadStage::ModelPointer;
+      cache.skeleton_last_stage = player.skeleton_stage;
+      continue;
+    }
+    if (!object_klass_name_is(*c.mem, *model, c.off.il2cpp_class_name,
+                              "SkeletonModel", &c.class_name_cache)) {
+      player.skeleton_stage = nzl::SkeletonReadStage::ModelClassMismatch;
+      cache.skeleton_last_stage = player.skeleton_stage;
+      continue;
+    }
+    ++cache.skeleton_model_matches;
+    if (*model > UINT64_MAX - c.off.skeleton_model_description) {
+      player.skeleton_stage = nzl::SkeletonReadStage::DescriptionPointer;
+      cache.skeleton_last_stage = player.skeleton_stage;
+      continue;
+    }
+    const auto description =
+        c.mem->ptr(*model + c.off.skeleton_model_description);
+    if (!description || !nzl::plausible_ptr(*description)) {
+      player.skeleton_stage = nzl::SkeletonReadStage::DescriptionPointer;
+      cache.skeleton_last_stage = player.skeleton_stage;
+      continue;
+    }
+    if (!object_klass_name_is(*c.mem, *description, c.off.il2cpp_class_name,
+                              "SkeletonConfig", &c.class_name_cache)) {
+      player.skeleton_stage = nzl::SkeletonReadStage::DescriptionClassMismatch;
+      cache.skeleton_last_stage = player.skeleton_stage;
+      continue;
+    }
+    ++cache.skeleton_description_matches;
+
+    auto result = nzl::read_skeleton_snapshot(*c.mem, player.character, c.off);
+    player.skeleton_stage = result.stage;
+    if (!result.ok()) {
+      cache.skeleton_last_stage = result.stage;
+      continue;
+    }
+    player.skeleton = std::move(result.snapshot);
+    player.skeleton_valid = true;
+    ++cache.skeleton_valid;
+    if (cache.skeleton_bone_count == 0) {
+      cache.skeleton_bone_count = player.skeleton.bones_count;
+      cache.skeleton_head1_index = player.skeleton.head1_index;
+    }
+  }
+  if (cache.skeleton_valid == cache.skeleton_attempted)
+    cache.skeleton_last_stage = nzl::SkeletonReadStage::Ok;
+  cache.last_skeleton_refresh = now;
+}
+static void clear_player_skeletons(PlayerCache& cache) {
+  for (auto& player : cache.entries) {
+    player.skeleton = {};
+    player.skeleton_valid = false;
+    player.skeleton_stage = nzl::SkeletonReadStage::ProfileDisabled;
+  }
+  cache.skeleton_attempted = 0;
+  cache.skeleton_model_matches = 0;
+  cache.skeleton_description_matches = 0;
+  cache.skeleton_valid = 0;
+  cache.skeleton_bone_count = 0;
+  cache.skeleton_head1_index = -1;
+  cache.skeleton_last_stage = nzl::SkeletonReadStage::ProfileDisabled;
+  cache.last_skeleton_refresh = 0;
+}
 static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& local,
                                                       PlayerCache& cache, ULONGLONG now) {
   if (!cache.last_roster_check || now - cache.last_roster_check >= 1000) {
@@ -707,10 +813,16 @@ static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& l
       for (uint64_t ch : chars) { PlayerCacheEntry e; e.character = ch; cache.entries.push_back(e); }
       cache.last_record_refresh = 0;
       cache.last_nickname_refresh = 0;
+      cache.last_skeleton_refresh = 0;
     }
     cache.last_roster_check = now;
   }
-  if (cache.entries.empty()) return {};
+  if (cache.entries.empty()) {
+    clear_player_skeletons(cache);
+    if (c.show_skeleton && c.off.skeleton_offsets_configured)
+      cache.skeleton_last_stage = nzl::SkeletonReadStage::Ok;
+    return {};
+  }
   if ((!cache.last_record_refresh || now - cache.last_record_refresh >= 3000) &&
       refresh_player_records(c, cache)) {
     cache.last_record_refresh = now;
@@ -724,6 +836,12 @@ static std::vector<nzl::PlayerSnap> snapshot_players(Ctx& c, const nzl::Vec3f& l
   if (!cache.last_meta_refresh || now - cache.last_meta_refresh >= 250) {
     refresh_player_metadata(c, cache);
     cache.last_meta_refresh = now;
+  }
+  if (c.show_skeleton &&
+      (!cache.last_skeleton_refresh || now - cache.last_skeleton_refresh >= 1000)) {
+    refresh_player_skeletons(c, cache, now);
+  } else if (!c.show_skeleton && cache.last_skeleton_refresh) {
+    clear_player_skeletons(cache);
   }
   std::vector<nzl::PlayerSnap> out; out.reserve(cache.entries.size());
   for (const auto& e : cache.entries) {
@@ -930,7 +1048,7 @@ static const MenuOption kVisualOptions[] = {
   {OptionId::Fov, "Projection FOV", OptionKind::Slider, 40, 140, 1},
   {OptionId::MaxDistance, "Max distance", OptionKind::Slider, 25, 1500, 25},
   {OptionId::Boxes, "Player boxes", OptionKind::Toggle},
-  {OptionId::Skeleton, "Skeleton", OptionKind::Toggle},
+  {OptionId::Skeleton, "Skeleton (approx.)", OptionKind::Toggle},
   {OptionId::Labels, "Names / distance", OptionKind::Toggle},
   {OptionId::ShowDead, "Show dead", OptionKind::Toggle},
   {OptionId::Hp, "HP bars", OptionKind::Toggle},
@@ -1995,6 +2113,22 @@ static void esp_worker(Ctx* ui) {
                       player_cache.dictionary_active_values);
       else
         std::snprintf(dictionary_status, sizeof(dictionary_status), "DICT INVALID");
+      char skeleton_status[128]{};
+      if (!work.show_skeleton) {
+        std::snprintf(skeleton_status, sizeof(skeleton_status), "off");
+      } else {
+        const auto stage = nzl::skeleton_read_stage_name(
+            player_cache.skeleton_last_stage);
+        std::snprintf(skeleton_status, sizeof(skeleton_status),
+                      "raw %zu/%zu m%zu c%zu n%d h%d %.*s",
+                      player_cache.skeleton_valid,
+                      player_cache.skeleton_attempted,
+                      player_cache.skeleton_model_matches,
+                      player_cache.skeleton_description_matches,
+                      player_cache.skeleton_bone_count,
+                      player_cache.skeleton_head1_index,
+                      static_cast<int>(stage.size()), stage.data());
+      }
       char basis_status[64]{};
       const char* basis_source = basis.source == nzl::CameraBasisSource::Quaternion ? "Q" : "AXIS";
       if (basis.axes_valid && basis.quaternion_valid)
@@ -2003,25 +2137,25 @@ static void esp_worker(Ctx* ui) {
                       basis.quaternion_axis_alignment);
       else
         std::snprintf(basis_status, sizeof(basis_status), "BASIS %s QA n/a", basis_source);
-      char status[512];
+      char status[768];
       if (measured_fps > 0.0)
         std::snprintf(status, sizeof(status),
-                      "DATA %.1f/s | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu | FOV %.0f VIEW %dx%d %s",
+                      "DATA %.1f/s | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu | SKEL %s\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu | FOV %.0f VIEW %dx%d %s",
                       measured_fps, paint_fps, (unsigned long long)last_work_ms,
                       dictionary_status, player_cache.entries.size(), players.size(),
-                      work.render.size(), culled_dead, culled_distance, culled_view,
-                      culled_edge, player_cache.dictionary_read_failures,
+                      work.render.size(), skeleton_status, culled_dead, culled_distance,
+                      culled_view, culled_edge, player_cache.dictionary_read_failures,
                       (unsigned long long)camera_read_failures,
                       (unsigned long long)camera_position_failures,
                       (unsigned long long)camera_basis_failures,
                       work.fov, view.width, view.height, basis_status);
       else
         std::snprintf(status, sizeof(status),
-                      "DATA measuring | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu | FOV %.0f VIEW %dx%d %s",
+                      "DATA measuring | PAINT %.1f/s | WORK %llums\n%s | ROSTER %zu POS %zu DRAW %zu | SKEL %s\nCULLED dead/far/proj/edge %zu/%zu/%zu/%zu | RD-FAIL %zu | CAM-FAIL %llu/%llu/%llu | FOV %.0f VIEW %dx%d %s",
                       paint_fps, (unsigned long long)last_work_ms, dictionary_status,
                       player_cache.entries.size(), players.size(), work.render.size(),
-                      culled_dead, culled_distance, culled_view, culled_edge,
-                      player_cache.dictionary_read_failures,
+                      skeleton_status, culled_dead, culled_distance, culled_view,
+                      culled_edge, player_cache.dictionary_read_failures,
                       (unsigned long long)camera_read_failures,
                       (unsigned long long)camera_position_failures,
                       (unsigned long long)camera_basis_failures,

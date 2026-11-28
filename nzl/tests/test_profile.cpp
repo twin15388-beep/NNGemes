@@ -36,6 +36,18 @@ int main() {
         "nickname slot chain is populated from exact-build SDK offsets");
   check(offsets.ctm_x == 0x10 && offsets.ctm_y == 0x14 && offsets.ctm_z == 0x18,
         "CharacterTransformModel coordinates are build-profile values");
+  check(skeleton_offsets_configured(profile) &&
+            offsets.skeleton_offsets_configured &&
+            offsets.skeleton_character_model == 0x138 &&
+            offsets.skeleton_model_description == 0x10 &&
+            offsets.skeleton_model_bones_data == 0x18 &&
+            offsets.skeleton_config_head1_index == 0x48,
+        "raw SkeletonModel/SkeletonConfig layout is configured from cross-checked SDK fields");
+  GameProfile missing_skeleton_field = profile;
+  missing_skeleton_field.skeleton.config_bones_hierarchy_data = {};
+  check(!skeleton_offsets_configured(missing_skeleton_field) &&
+            !nzl::Offsets(missing_skeleton_field).skeleton_offsets_configured,
+        "raw skeleton reader fails closed when a required descriptor field is absent");
   check(!offsets.hp_live_verified && !offsets.armor_live_verified &&
             !offsets.role_live_verified && !offsets.loot_live_verified &&
             offsets.cars_profile_supported && offsets.cars_dictionary == 0x60 &&

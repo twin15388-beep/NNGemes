@@ -95,7 +95,7 @@ Driver вручную отображается kdmapper и остаётся за
 | Persistent UI | Отдельное menu window, `Insert`, перетаскивание, вкладки Aim/Visuals/Loot/Radar/Misc, настройки сохраняются рядом с exe | Требует повторной проверки на Windows |
 | Attach/reconnect | Worker ждёт процесс, GameAssembly, классы и активную chain; повторяет попытки между loading/lobby/match/PID | Live-переходы не проверены в каждой ситуации |
 | Player ESP | Boxes, labels/distance, dead toggle, HP/armor/roles, tracers, max distance и projection FOV | Сейчас владелец сообщает, что видит 2–3 игрока; причина ещё не установлена |
-| Skeleton | Есть screen-space stick figure | Это пропорциональная 2D-схема, не чтение настоящих bone transforms |
+| Skeleton | Screen-space stick figure остаётся приблизительной; при включённом пункте `Skeleton (approx.)` считывается и диагностируется raw `SkeletonModel`/`SkeletonConfig` pose snapshot | Реальные world-space суставы ещё не рисуются: формат hierarchy и преобразование model pose → world пока не подтверждены в live-матче |
 | Aim | Hold key, FOV, smoothing, выбираемая Head/Chest/Pelvis точка, `SendInput` | Точки приближены высотами; настоящий bone targeting/visibility и live-работа не подтверждены |
 | Loot ESP | Снимок loot-позиций, дистанция и экранный маркер | Generic marker; название/тип предмета и offsets не подтверждены в актуальном матче |
 | Cars / radar | Снимок автомобилей, radar и настройки диапазона | Live-данные/геометрия требуют проверки |
@@ -104,7 +104,7 @@ Driver вручную отображается kdmapper и остаётся за
 
 ### Частоты чтения
 
-В последнем варианте worker отделяет частые данные от стабильных: позиции игроков обновляются каждый render-cycle; roster проверяется примерно раз в секунду; pointer records/HP-armor-role chains — раз в 3 секунды; HP/armor/role/dead values — раз в 250 мс; cars — раз в 250 мс; loot — раз в секунду. Камера читается batch-командой, а позиции и cached сущности перепроецируются между редкими refresh.
+В последнем варианте worker отделяет частые данные от стабильных: позиции игроков обновляются каждый render-cycle; roster проверяется примерно раз в секунду; pointer records/HP-armor-role chains — раз в 3 секунды; HP/armor/role/dead values — раз в 250 мс; cars — раз в 250 мс; loot — раз в секунду. Камера читается batch-командой, а позиции и cached сущности перепроецируются между редкими refresh; raw skeleton snapshot обновляется раз в секунду только при включённом `Skeleton (approx.)`.
 
 Pacing нацелен примерно на 16 мс за цикл, но если чтения медленнее, дополнительный фиксированный `Sleep` не добавляется. Это целевой pacing, **не обещание 60 FPS**.
 
@@ -113,12 +113,15 @@ Pacing нацелен примерно на 16 мс за цикл, но если
 Строка статуса сейчас имеет вид:
 
 ```text
-ESP data 58.0/s paint 56.0/s work 3ms | dict 26/32 active 26 roster 26 pos 26 draw 3 | dead 0 far 0 proj 23 edge 0 rd-fail 0
+DATA 58.0/s | PAINT 56.0/s | WORK 3ms
+DICT 26/32 active 26 | ROSTER 26 POS 26 DRAW 3 | SKEL raw 0/26 m0 c0 n0 h-1 model
+CULLED dead/far/proj/edge 0/0/23/0 | RD-FAIL 0 | CAM-FAIL 0/0/0 | FOV 90 VIEW 1920x1080 BASIS AXIS
 ```
 
 - `data/s` — завершённые циклы чтения/подготовки ESP; `paint/s` — измеренные `WM_PAINT` overlay; `work` — длительность последнего цикла worker.
 - `dict count/capacity` — `Dictionary.Count` и x64 array capacity; `active` — слоты с неотрицательным hash и plausibly valid value pointer; `roster` — active values, у которых runtime klass равен `BattleCharacterModel`.
 - `pos` — roster entries с конечной ненулевой координатой; `draw` — сущности, прошедшие фильтры и добавленные в render list.
+- `SKEL raw valid/attempted m... c... n... h... stage` — диагностический снимок настоящего managed SkeletonModel: прошедшие проверки записи / roster, совпавшие классы model/config, число костей и индекс Head1. Это проверка сырых pose данных, не подтверждение world-space положения и не доказательство точности рисунка.
 - `dead` — исключены настройкой Show Dead; `far` — за Max Distance; `proj` — у сущности не прошла проекция хотя бы одной точки; `edge` — строгий экранный Visible Only; `rd-fail` — неудачные driver batch-команды на roster/hash/class чтении.
 - Низкий `dict count/active` указывает на root/dictionary/build mismatch; большой `active`, но малый `roster` — на value class mismatch; большой `roster`, но малый `pos` — на transform/position чтение; нормальные `roster/pos`, но малый `draw` и большой `proj` — на camera basis/FOV/frustum/проекцию; высокий `data/s`, но низкий `paint/s` — на UI/paint bottleneck.
 
@@ -135,15 +138,27 @@ ESP data 58.0/s paint 56.0/s work 3ms | dict 26/32 active 26 roster 26 pos 26 dr
 
 **В sandbox проверено:**
 
-- Host `chain`, `pipeline`, `profile` tests: все три бинарника собраны g++ C++20; `ALL NZL TESTS PASSED`, `ALL PIPELINE TESTS PASSED`, `ALL PROFILE TESTS PASSED`.
-- Python: `py_compile robrun.py` и `unittest discover -s tests -v`; 12 tests прошли.
-- Zig 0.13.0 cross-build для `x86_64-windows-gnu`: `overlay_windows.cpp`, `main_windows.cpp`, `probe_windows.cpp`, shared client, driver-memory adapter, chain/pipeline объекты и три PE x64 exe собраны/связаны, каждый compile/link exit code 0. Это GNU cross-build, не MSVC workflow; EXE остаются в `/tmp`, не входят в ZIP.
+- Direct host g++ C++20 builds/runs of `test_chain`, `test_pipeline`, `test_profile`, and the new `test_skeleton` all passed. These cover the bounded raw skeleton parser with synthetic FakeMemory data; they do not validate target-game values.
+- Python: `py_compile robrun.py` и `unittest discover -s tests -v`; 12 tests прошли ранее.
+- Earlier x64 Windows GNU cross-build covered the then-current overlay before this skeleton diagnostic change. The current `overlay_windows.cpp` changes have not been Windows-compiled; this sandbox currently has no CMake/MSVC/MinGW/Zig toolchain.
 
 **Не проверено здесь:** нативная MSVC+WDK сборка и запуск PowerShell workflow; сборка kernel driver; one-file `.bat`; выполнение EXE в Windows; live match и актуальная полнота player render; реальные data/paint rates в игре; точность aim/HP/armor/roles/loot/cars. Runtime-причина 2–3 видимых игроков не установлена.
 
 ## Следующий шаг
 
-1. В `D:\NZL Rob run` заменить исходники содержимым `NZL-Studio-updated-source.zip` и из корня выполнить `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-BuildAll.ps1`. Скрипт теперь возвращает ненулевой exit code при сбое driver/CMake/CTest и печатает exit каждого этапа.
-2. Убедиться, что `nzl_overlay.exe OK`, затем запустить `NZL-START.bat` (или после успешной сборки создать single-file через `NZL-Package.ps1`).
-3. Войти в матч и прислать полную строку `data/paint/dict/roster/pos/draw` и сообщение об ошибке, если оно появится.
-4. По счётчикам определить, где теряются игроки и где расходуется время; только затем менять профиль или projection.
+1. После синхронизации текущей ветки выполнить из корня проекта на Windows:
+   `git pull --ff-only origin arena/6d12f677-nngemes`
+2. Запустить только build+tests (это не загружает драйвер):
+   `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-BuildAll.ps1`
+   Требовать exit 0 и строку `nzl_overlay.exe OK`. Если и только если
+   `nzl\driver\kdmapper.exe` отсутствует, отдельно выполнить
+   `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-GetKdmapper.ps1`.
+   Упаковывать только после успешного BuildAll:
+   `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\NZL-Package.ps1`.
+3. **Не запускать** `NZL-START.bat`/`NZL-Studio.bat` и не загружать драйвер:
+   в handoff остаётся stop из-за двух прежних BSOD. Build/package сами по себе
+   не разрешают runtime.
+4. Когда безопасный live-тест будет отдельно разрешён, включить
+   `Visuals -> Skeleton (approx.)` и прислать полную строку статуса с
+   `SKEL raw ...`. Она подтвердит или отвергнет чтение сырого SkeletonModel;
+   только после этого разбирать hierarchy и world-space преобразование.

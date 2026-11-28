@@ -698,22 +698,28 @@
   run here. No live match, overlay runtime, or ESP counters have been verified.
 
 ### Source archive / immediate next step
-- `build/NZL-Studio-updated-source.zip` is an ignored source archive built from
-  tracked working-tree files plus non-ignored untracked source additions. It
-  excludes `.git`, `build/`, this sandbox-only `HANDOFF.md`, and Windows/driver
-  binaries. The tracked `RobRun.exe` (1,900,544-byte MZ/PE) is deliberately omitted
-  and remains untouched in the repository. The regenerated ZIP contains 88 files,
-  420,489 uncompressed bytes, and 157,365 ZIP bytes; SHA-256
-  `df9afee807b28d9cf1e609fa0c5002c6ab8bc760a440a71a577c94bcc759b39c`. `unzip -t`
-  passed. The archive excludes this handoff, so the checksum note is not self-referential.
-- Windows checkout is on `arena/6d12f677-nngemes` at `7ec479e`. After the current
-  fix is pushed, run `git pull --ff-only origin arena/6d12f677-nngemes`, confirm
-  the build-script `3/3 host unit tests` stage and profile target, then run
-  `tools/NZL-BuildAll.ps1` from the project root. Send the full output and exit
-  code; do not load the driver until the corrected build and tests pass.
-- After a successful native build and tests, the next goal is a controlled live
-  probe and then a current `data/paint/dict/roster/pos/draw` status line. The
-  2–3-player/lag cause and all runtime compatibility remain unknown.
+- `build/NZL-Studio-updated-source.zip` and its recorded hash describe an older
+  source snapshot; it was not regenerated for the raw skeleton reader and must
+  not be used to transfer this turn's changes. The tracked `RobRun.exe` remains
+  untouched.
+- The old note that the Windows checkout was at `7ec479e` is historical. At the
+  start of the skeleton investigation, the current Arena branch was
+  `arena/6d12f677-nngemes` at `39682f7`; check the Windows clone after syncing the
+  latest branch rather than relying on the older HEAD note.
+- After the current branch update is available, run
+  `git pull --ff-only origin arena/6d12f677-nngemes`, then from the project root
+  run `powershell -NoProfile -ExecutionPolicy Bypass -File
+  .\tools\NZL-BuildAll.ps1`; capture the full output and exit code. CTest now
+  includes four host targets (chain, pipeline, profile, skeleton). If and only
+  if `nzl\driver\kdmapper.exe` is absent, run the separate
+  `powershell -NoProfile -ExecutionPolicy Bypass -File
+  .\tools\NZL-GetKdmapper.ps1`. Package only after BuildAll succeeds via
+  `powershell -NoProfile -ExecutionPolicy Bypass -File
+  .\tools\NZL-Package.ps1`.
+- The controlled live probe and current `SKEL raw` status are still pending.
+  The previous two BSODs mean build/package validation does not authorize
+  loading the driver or launching `NZL-START.bat`/`NZL-Studio.bat`.
+  The 2–3-player cause and all runtime compatibility remain unknown.
 
 ## Nickname labels, vehicle snapshot, and build/package handoff (2026-11-27)
 - Confirmed why labels showed only `#<id>`: the render path only formatted
@@ -770,3 +776,44 @@
   two BSODs in the continuity record and explicit stop remain in force: build
   and package validation do not authorize loading the driver or launching either
   runtime BAT. Live-game behavior of names/cars remains unknown.
+
+## Raw SkeletonModel snapshot investigation (2026-11-27)
+- Cross-checked the managed field layout in SDK dumps for builds 26509119,
+  26559853, 26586703, 26599424, 26615022, 26726105, 26807668, and 26866884:
+  `BattleCharacterModel.SkeletonModel +0x138` -> `SkeletonModel._skeletonDescription
+  +0x10` / `_bonesData +0x18`. `SkeletonConfig` holds `BonesCount`, `BoneDataSize`,
+  local/model-orientation offsets, length offset, hierarchy array/max-children,
+  and root/legs/spine/neck/head indices at the offsets recorded in
+  `nzl/include/nzl/game_profile.h`. These are SDK field-layout checks, not proof
+  of live values or of world-coordinate conversion.
+- Added `nzl/src/skeleton.cpp` read-only snapshot parsing, with class-name gates
+  for `SkeletonModel` and `SkeletonConfig` in the Windows overlay, bounded x64
+  array lengths, profile safety ceilings, config-index/stride checks, finite
+  quaternion/length checks, and raw hierarchy retention. The dynamic config
+  values and bone records are read from each object; no bone indices or stride
+  values are hard-coded.
+- The Visuals toggle is now labelled `Skeleton (approx.)`. While enabled, the
+  overlay refreshes a raw skeleton snapshot once per second and reports
+  `SKEL raw <valid>/<attempted> ...` in its status. The existing screen-space
+  stick figure remains approximate; the hierarchy encoding and model-pose to
+  world-pose transformation have deliberately not been guessed or rendered.
+- Added CMake target `nzl_skeleton_tests`; direct host g++ C++20 builds/runs of
+  chain, pipeline, profile, and skeleton tests all passed. `git diff --check`
+  passed. CMake/MSVC/WDK is unavailable in this sandbox, so the Windows overlay
+  edits have not been natively compiled and no live match was read.
+- Current branch at start of this investigation was
+  `arena/6d12f677-nngemes`, HEAD `39682f7`; the raw snapshot changes belong to
+  this same branch. No runtime BAT was run and no driver was loaded. Existing
+  stop about the two prior BSODs remains unchanged.
+- Next safe verification is Windows `git pull --ff-only origin
+  arena/6d12f677-nngemes`, then
+  `powershell -NoProfile -ExecutionPolicy Bypass -File
+  .\tools\NZL-BuildAll.ps1` and capture the exit/output. If and only if
+  `nzl\driver\kdmapper.exe` is absent, run
+  `powershell -NoProfile -ExecutionPolicy Bypass -File
+  .\tools\NZL-GetKdmapper.ps1`; package only after BuildAll succeeds via
+  `powershell -NoProfile -ExecutionPolicy Bypass -File
+  .\tools\NZL-Package.ps1`. Do not run `NZL-START.bat`, `NZL-Studio.bat`, or
+  load the driver while the existing BSOD stop is active. Once runtime testing
+  is authorized and safe, enable `Visuals -> Skeleton (approx.)` and report the
+  `SKEL raw` status; only then continue to world-space conversion.
